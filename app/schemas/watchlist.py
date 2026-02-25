@@ -9,6 +9,7 @@ class WatchlistItemBase(BaseModel):
     favorite: Optional[bool] = False
     genres: Optional[List[str]] = []
     notes: Optional[str] = None
+    description: Optional[str] = None
     year: Optional[int] = None
     endYear: Optional[int] = None
     running: Optional[bool] = False
@@ -23,6 +24,7 @@ class WatchlistItemUpdate(BaseModel):
     favorite: Optional[bool] = None
     genres: Optional[List[str]] = None
     notes: Optional[str] = None
+    description: Optional[str] = None
     year: Optional[int] = None
     endYear: Optional[int] = None
     running: Optional[bool] = None

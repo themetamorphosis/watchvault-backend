@@ -48,6 +48,7 @@ async def upsert_cache(
     year: Optional[int],
     cover_url: Optional[str] = None,
     genres: Optional[list] = None,
+    description: Optional[str] = None,
     runtime: Optional[int] = None,
     tmdb_id: Optional[int] = None,
 ) -> models.MediaCache:
@@ -59,6 +60,8 @@ async def upsert_cache(
             existing.coverUrl = cover_url
         if genres and (not existing.genres or len(existing.genres) == 0):
             existing.genres = genres
+        if description is not None and not existing.description:
+            existing.description = description
         if runtime is not None and existing.runtime is None:
             existing.runtime = runtime
         if tmdb_id is not None and existing.tmdbId is None:
@@ -74,6 +77,7 @@ async def upsert_cache(
             year=year,
             coverUrl=cover_url,
             genres=genres or [],
+            description=description,
             runtime=runtime,
             tmdbId=tmdb_id,
         )
@@ -97,9 +101,16 @@ async def _fetch_tvmaze_poster(title: str) -> dict:
             return {"coverUrl": None, "genres": []}
         show = data[0].get("show", {})
         images = show.get("image") or {}
+        
+        # strip html tags from summary
+        import re
+        raw_summary = show.get("summary") or ""
+        clean_summary = re.sub('<[^<]+?>', '', raw_summary) if raw_summary else None
+
         return {
             "coverUrl": images.get("original") or images.get("medium"),
-            "genres": show.get("genres", [])
+            "genres": show.get("genres", []),
+            "description": clean_summary
         }
 
 async def _fetch_jikan_poster(title: str) -> dict:
@@ -115,7 +126,8 @@ async def _fetch_jikan_poster(title: str) -> dict:
         images = anime.get("images", {}).get("jpg", {})
         return {
             "coverUrl": images.get("large_image_url") or images.get("image_url"),
-            "genres": genres
+            "genres": genres,
+            "description": anime.get("synopsis")
         }
 
 TMDB_GENRES = {
@@ -144,6 +156,7 @@ async def _fetch_tmdb_movie_poster(title: str, year: Optional[int]) -> dict:
         return {
             "coverUrl": f"https://image.tmdb.org/t/p/w780{poster_path}" if poster_path else None,
             "genres": genres,
+            "description": result.get("overview"),
             "tmdbId": result.get("id"),
         }
 
@@ -228,12 +241,13 @@ async def fetch_and_cache_poster(db: AsyncSession, title: str, media_type: str, 
             db, title, media_type, year,
             cover_url=result.get("coverUrl"),
             genres=result.get("genres", []),
+            description=result.get("description"),
             tmdb_id=result.get("tmdbId"),
         )
         return result
     except Exception as e:
         logger.warning(f"External API fetch failed for poster '{title}': {e}")
-        return {"coverUrl": None, "genres": []}
+        return {"coverUrl": None, "genres": [], "description": None}
 
 
 async def fetch_and_cache_runtime(db: AsyncSession, title: str, media_type: str, year: Optional[int]) -> Optional[int]:
@@ -291,12 +305,12 @@ async def get_poster(
     cached = await get_cached(db, title, type, year)
     if cached and cached.coverUrl:
         logger.info(f"CACHE HIT (poster): {title}")
-        return PosterResponse(ok=True, coverUrl=cached.coverUrl, genres=cached.genres or [])
+        return PosterResponse(ok=True, coverUrl=cached.coverUrl, genres=cached.genres or [], description=cached.description)
 
     # 2. Cache miss → fetch from external API
     logger.info(f"CACHE MISS (poster): {title} — fetching from external API")
     result = await fetch_and_cache_poster(db, title, type, year)
-    return PosterResponse(ok=True, coverUrl=result.get("coverUrl"), genres=result.get("genres", []))
+    return PosterResponse(ok=True, coverUrl=result.get("coverUrl"), genres=result.get("genres", []), description=result.get("description"))
 
 
 @router.get("/runtime", response_model=RuntimeResponse)

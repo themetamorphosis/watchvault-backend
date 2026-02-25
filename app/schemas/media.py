@@ -10,6 +10,7 @@ class PosterResponse(BaseModel):
     ok: bool = True
     coverUrl: Optional[str] = None
     genres: List[str] = []
+    description: Optional[str] = None
 
 class RuntimeResponse(BaseModel):
     runtime: Optional[int] = None
@@ -18,5 +19,6 @@ class MediaCacheResponse(BaseModel):
     """Full cached metadata for a media title."""
     coverUrl: Optional[str] = None
     genres: List[str] = []
+    description: Optional[str] = None
     runtime: Optional[int] = None
     cached: bool = False  # True if data came from cache

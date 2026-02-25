@@ -34,6 +34,7 @@ class WatchlistItem(Base):
 
     genres = Column(ARRAY(String), default=list)
     notes = Column(String, nullable=True)
+    description = Column(String, nullable=True)
 
     year = Column(Integer, nullable=True)
     endYear = Column(Integer, nullable=True)
@@ -69,6 +70,7 @@ class MediaCache(Base):
     # Cached metadata from external APIs
     coverUrl  = Column(String, nullable=True)
     genres    = Column(ARRAY(String), default=list)
+    description = Column(String, nullable=True)
     runtime   = Column(Integer, nullable=True)     # total runtime in minutes
     tmdbId    = Column(Integer, nullable=True)      # TMDB ID for future deep-links
 
