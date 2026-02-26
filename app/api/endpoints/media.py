@@ -94,8 +94,10 @@ async def upsert_cache(
 async def _fetch_tvmaze_poster(title: str) -> dict:
     async with httpx.AsyncClient(timeout=10.0) as client:
         r = await client.get(f"https://api.tvmaze.com/search/shows?q={title}")
+        if r.status_code == 429 or r.status_code >= 500:
+            raise Exception(f"TVMaze API error {r.status_code}")
         if r.status_code != 200:
-            return {"coverUrl": None, "genres": []}
+            return {"coverUrl": None, "genres": [], "description": None}
         data = r.json()
         if not data:
             return {"coverUrl": None, "genres": []}
@@ -116,8 +118,10 @@ async def _fetch_tvmaze_poster(title: str) -> dict:
 async def _fetch_jikan_poster(title: str) -> dict:
     async with httpx.AsyncClient(timeout=10.0) as client:
         r = await client.get(f"https://api.jikan.moe/v4/anime?q={title}&limit=1")
+        if r.status_code == 429 or r.status_code >= 500:
+            raise Exception(f"Jikan API error {r.status_code}")
         if r.status_code != 200:
-            return {"coverUrl": None, "genres": []}
+            return {"coverUrl": None, "genres": [], "description": None}
         data = r.json().get("data", [])
         if not data:
             return {"coverUrl": None, "genres": []}

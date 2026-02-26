@@ -39,6 +39,9 @@ async def _background_enrich(title: str, media_type: str, year: int | None, item
                     if item.runtime is None and cached.runtime is not None:
                         item.runtime = cached.runtime
                         changed = True
+                    if not item.description and cached.description:
+                        item.description = cached.description
+                        changed = True
                     if changed:
                         await db.commit()
                         logger.info(f"Background enriched watchlist item '{title}' from cache")
@@ -83,6 +86,8 @@ async def create_watchlist_item(
             item_data["genres"] = cached.genres
         if item_data.get("runtime") is None and cached.runtime is not None:
             item_data["runtime"] = cached.runtime
+        if not item_data.get("description") and cached.description:
+            item_data["description"] = cached.description
 
     db_item = models.WatchlistItem(
         id=str(uuid.uuid4()),
