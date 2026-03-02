@@ -389,7 +389,7 @@ def _cache_set(key: str, value: list):
 @router.get("/search", response_model=TMDBSearchResponse)
 async def search_tmdb(
     query: str = Query(..., min_length=1, max_length=200),
-    type: str = Query("movie", regex="^(movie|tv|anime)$"),
+    type: str = Query("movie", pattern="^(movie|tv|anime)$"),
 ):
     """Search TMDB for movies or TV shows. Returns up to 8 results for autocomplete."""
     if not settings.TMDB_API_KEY:
