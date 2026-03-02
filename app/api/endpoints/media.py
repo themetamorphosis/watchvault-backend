@@ -14,7 +14,7 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from app.schemas.media import PosterResponse, RuntimeResponse
+from app.schemas.media import PosterResponse, RuntimeResponse, TMDBSearchResult, TMDBSearchResponse
 from app.core.config import settings
 from app.api.dependencies import get_db
 from app.db import models
@@ -196,9 +196,10 @@ async def _fetch_tv_runtime(title: str, year: Optional[int]) -> Optional[int]:
         d_req = await client.get(f"https://api.themoviedb.org/3/tv/{show_id}?api_key={settings.TMDB_API_KEY}")
         if d_req.status_code != 200: return None
         info = d_req.json()
-        ep_runtimes = info.get("episode_run_time", [])
-        ep_runtime = sum(ep_runtimes) / len(ep_runtimes) if ep_runtimes else (info.get("last_episode_to_air", {}).get("runtime") or 25)
-        total_eps = info.get("number_of_episodes", 1)
+        ep_runtimes = info.get("episode_run_time") or []
+        last_episode = info.get("last_episode_to_air") or {}
+        ep_runtime = sum(ep_runtimes) / len(ep_runtimes) if ep_runtimes else (last_episode.get("runtime") or 25)
+        total_eps = info.get("number_of_episodes") or 1
         return int(round(ep_runtime * total_eps))
 
 async def _fetch_anime_runtime(title: str) -> Optional[int]:
@@ -335,3 +336,131 @@ async def get_runtime(
     logger.info(f"CACHE MISS (runtime): {title} — fetching from external API")
     runtime = await fetch_and_cache_runtime(db, title, type, year)
     return RuntimeResponse(runtime=runtime)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  TMDB SEARCH (autocomplete suggestions) — optimised
+# ═══════════════════════════════════════════════════════════════
+
+TMDB_TV_GENRES = {
+    10759: "Action & Adventure", 16: "Animation", 35: "Comedy", 80: "Crime",
+    99: "Documentary", 18: "Drama", 10751: "Family", 10762: "Kids",
+    9648: "Mystery", 10763: "News", 10764: "Reality", 10765: "Sci-Fi & Fantasy",
+    10766: "Soap", 10767: "Talk", 10768: "War & Politics", 37: "Western",
+}
+
+# ── Persistent HTTP client (reuses TCP connections) ──────────
+_tmdb_client: httpx.AsyncClient | None = None
+
+def _get_tmdb_client() -> httpx.AsyncClient:
+    global _tmdb_client
+    if _tmdb_client is None or _tmdb_client.is_closed:
+        _tmdb_client = httpx.AsyncClient(
+            timeout=4.0,
+            http2=False,
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+        )
+    return _tmdb_client
+
+# ── Simple in-memory cache (key → (timestamp, results)) ─────
+import time as _time
+_search_cache: dict[str, tuple[float, list]] = {}
+_CACHE_TTL = 300  # 5 minutes
+_CACHE_MAX = 128
+
+
+def _cache_get(key: str):
+    entry = _search_cache.get(key)
+    if entry and (_time.time() - entry[0]) < _CACHE_TTL:
+        return entry[1]
+    if entry:
+        _search_cache.pop(key, None)
+    return None
+
+
+def _cache_set(key: str, value: list):
+    # Evict oldest if full
+    if len(_search_cache) >= _CACHE_MAX:
+        oldest = min(_search_cache, key=lambda k: _search_cache[k][0])
+        _search_cache.pop(oldest, None)
+    _search_cache[key] = (_time.time(), value)
+
+
+@router.get("/search", response_model=TMDBSearchResponse)
+async def search_tmdb(
+    query: str = Query(..., min_length=1, max_length=200),
+    type: str = Query("movie", regex="^(movie|tv|anime)$"),
+):
+    """Search TMDB for movies or TV shows. Returns up to 8 results for autocomplete."""
+    if not settings.TMDB_API_KEY:
+        return TMDBSearchResponse(results=[])
+
+    # ── Check cache first ────────────────────────────────────
+    cache_key = f"{type}:{query.strip().lower()}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return TMDBSearchResponse(results=cached)
+
+    # Anime uses TMDB TV search (animation genre)
+    tmdb_type = "tv" if type in ("tv", "anime") else "movie"
+    genre_map = TMDB_TV_GENRES if tmdb_type == "tv" else TMDB_GENRES
+
+    import urllib.parse
+    encoded_query = urllib.parse.quote(query)
+    url = (
+        f"https://api.themoviedb.org/3/search/{tmdb_type}"
+        f"?api_key={settings.TMDB_API_KEY}"
+        f"&query={encoded_query}"
+        f"&include_adult=false&page=1"
+    )
+
+    try:
+        client = _get_tmdb_client()
+        r = await client.get(url)
+        if r.status_code != 200:
+            logger.warning(f"TMDB search failed ({r.status_code}) for query='{query}'")
+            return TMDBSearchResponse(results=[])
+
+        raw_results = r.json().get("results", [])
+
+        # For anime, filter to animation genre (id=16)
+        if type == "anime":
+            raw_results = [
+                r for r in raw_results
+                if 16 in r.get("genre_ids", [])
+            ]
+
+        results = []
+        for item in raw_results[:8]:
+            # Movie: title + release_date | TV: name + first_air_date
+            if tmdb_type == "movie":
+                title = item.get("title", "")
+                date_str = item.get("release_date", "")
+            else:
+                title = item.get("name", "")
+                date_str = item.get("first_air_date", "")
+
+            year = int(date_str[:4]) if date_str and len(date_str) >= 4 else None
+            poster_path = item.get("poster_path")
+            genres = [genre_map[g] for g in item.get("genre_ids", []) if g in genre_map]
+
+            results.append(TMDBSearchResult(
+                tmdbId=item.get("id", 0),
+                title=title,
+                year=year,
+                posterUrl=f"https://image.tmdb.org/t/p/w185{poster_path}" if poster_path else None,
+                overview=item.get("overview"),
+                mediaType=type,  # Keep original type (movie/tv/anime)
+                genres=genres,
+                voteAverage=item.get("vote_average"),
+            ))
+
+        # ── Cache the results ────────────────────────────────
+        _cache_set(cache_key, results)
+        return TMDBSearchResponse(results=results)
+
+    except Exception as e:
+        logger.error(f"TMDB search error for query='{query}': {e}")
+        return TMDBSearchResponse(results=[])
+
+

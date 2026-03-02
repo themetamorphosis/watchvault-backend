@@ -10,10 +10,10 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7 # 7 days
     
     # Database
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/thingsivewatched")
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql+asyncpg://watchvault:watchvault@localhost:5432/watchvault_db")
     
     # External APIs
-    TMDB_API_KEY: str = os.getenv("TMDB_API_KEY", "")
+    TMDB_API_KEY: str = os.getenv("TMDB_API_KEY", "414137d5aecfd3730a332566114511a9")
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
