@@ -92,47 +92,46 @@ async def upsert_cache(
 # ═══════════════════════════════════════════════════════════════
 
 async def _fetch_tvmaze_poster(title: str) -> dict:
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.get(f"https://api.tvmaze.com/search/shows?q={title}")
-        if r.status_code == 429 or r.status_code >= 500:
-            raise Exception(f"TVMaze API error {r.status_code}")
-        if r.status_code != 200:
-            return {"coverUrl": None, "genres": [], "description": None}
-        data = r.json()
-        if not data:
-            return {"coverUrl": None, "genres": []}
-        show = data[0].get("show", {})
-        images = show.get("image") or {}
-        
-        # strip html tags from summary
-        import re
-        raw_summary = show.get("summary") or ""
-        clean_summary = re.sub('<[^<]+?>', '', raw_summary) if raw_summary else None
+    client = _get_shared_client()
+    r = await client.get(f"https://api.tvmaze.com/search/shows?q={title}")
+    if r.status_code == 429 or r.status_code >= 500:
+        raise Exception(f"TVMaze API error {r.status_code}")
+    if r.status_code != 200:
+        return {"coverUrl": None, "genres": [], "description": None}
+    data = r.json()
+    if not data:
+        return {"coverUrl": None, "genres": []}
+    show = data[0].get("show", {})
+    images = show.get("image") or {}
 
-        return {
-            "coverUrl": images.get("original") or images.get("medium"),
-            "genres": show.get("genres", []),
-            "description": clean_summary
-        }
+    import re
+    raw_summary = show.get("summary") or ""
+    clean_summary = re.sub('<[^<]+?>', '', raw_summary) if raw_summary else None
+
+    return {
+        "coverUrl": images.get("original") or images.get("medium"),
+        "genres": show.get("genres", []),
+        "description": clean_summary,
+    }
 
 async def _fetch_jikan_poster(title: str) -> dict:
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.get(f"https://api.jikan.moe/v4/anime?q={title}&limit=1")
-        if r.status_code == 429 or r.status_code >= 500:
-            raise Exception(f"Jikan API error {r.status_code}")
-        if r.status_code != 200:
-            return {"coverUrl": None, "genres": [], "description": None}
-        data = r.json().get("data", [])
-        if not data:
-            return {"coverUrl": None, "genres": []}
-        anime = data[0]
-        genres = [g.get("name") for g in anime.get("genres", [])]
-        images = anime.get("images", {}).get("jpg", {})
-        return {
-            "coverUrl": images.get("large_image_url") or images.get("image_url"),
-            "genres": genres,
-            "description": anime.get("synopsis")
-        }
+    client = _get_shared_client()
+    r = await client.get(f"https://api.jikan.moe/v4/anime?q={title}&limit=1")
+    if r.status_code == 429 or r.status_code >= 500:
+        raise Exception(f"Jikan API error {r.status_code}")
+    if r.status_code != 200:
+        return {"coverUrl": None, "genres": [], "description": None}
+    data = r.json().get("data", [])
+    if not data:
+        return {"coverUrl": None, "genres": []}
+    anime = data[0]
+    genres = [g.get("name") for g in anime.get("genres", [])]
+    images = anime.get("images", {}).get("jpg", {})
+    return {
+        "coverUrl": images.get("large_image_url") or images.get("image_url"),
+        "genres": genres,
+        "description": anime.get("synopsis"),
+    }
 
 TMDB_GENRES = {
     28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy", 80: "Crime",
@@ -147,22 +146,22 @@ async def _fetch_tmdb_movie_poster(title: str, year: Optional[int]) -> dict:
     url = f"https://api.themoviedb.org/3/search/movie?api_key={settings.TMDB_API_KEY}&query={title}&include_adult=false&page=1"
     if year:
         url += f"&year={year}"
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.get(url)
-        if r.status_code != 200:
-            return {"coverUrl": None, "genres": [], "tmdbId": None}
-        results = r.json().get("results", [])
-        if not results:
-            return {"coverUrl": None, "genres": [], "tmdbId": None}
-        result = results[0]
-        genres = [TMDB_GENRES[g] for g in result.get("genre_ids", []) if g in TMDB_GENRES]
-        poster_path = result.get("poster_path")
-        return {
-            "coverUrl": f"https://image.tmdb.org/t/p/w780{poster_path}" if poster_path else None,
-            "genres": genres,
-            "description": result.get("overview"),
-            "tmdbId": result.get("id"),
-        }
+    client = _get_shared_client()
+    r = await client.get(url)
+    if r.status_code != 200:
+        return {"coverUrl": None, "genres": [], "tmdbId": None}
+    results = r.json().get("results", [])
+    if not results:
+        return {"coverUrl": None, "genres": [], "tmdbId": None}
+    result = results[0]
+    genres = [TMDB_GENRES[g] for g in result.get("genre_ids", []) if g in TMDB_GENRES]
+    poster_path = result.get("poster_path")
+    return {
+        "coverUrl": f"https://image.tmdb.org/t/p/w780{poster_path}" if poster_path else None,
+        "genres": genres,
+        "description": result.get("overview"),
+        "tmdbId": result.get("id"),
+    }
 
 
 async def _fetch_movie_runtime(title: str, year: Optional[int]) -> Optional[int]:
@@ -171,15 +170,18 @@ async def _fetch_movie_runtime(title: str, year: Optional[int]) -> Optional[int]
     url = f"https://api.themoviedb.org/3/search/movie?api_key={settings.TMDB_API_KEY}&query={title}&include_adult=false&page=1"
     if year:
         url += f"&year={year}"
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.get(url)
-        if r.status_code != 200: return None
-        results = r.json().get("results", [])
-        if not results: return None
-        movie_id = results[0].get("id")
-        d_req = await client.get(f"https://api.themoviedb.org/3/movie/{movie_id}?api_key={settings.TMDB_API_KEY}")
-        if d_req.status_code != 200: return None
-        return d_req.json().get("runtime")
+    client = _get_shared_client()
+    r = await client.get(url)
+    if r.status_code != 200:
+        return None
+    results = r.json().get("results", [])
+    if not results:
+        return None
+    movie_id = results[0].get("id")
+    d_req = await client.get(f"https://api.themoviedb.org/3/movie/{movie_id}?api_key={settings.TMDB_API_KEY}")
+    if d_req.status_code != 200:
+        return None
+    return d_req.json().get("runtime")
 
 async def _fetch_tv_runtime(title: str, year: Optional[int]) -> Optional[int]:
     if not settings.TMDB_API_KEY:
@@ -187,44 +189,49 @@ async def _fetch_tv_runtime(title: str, year: Optional[int]) -> Optional[int]:
     url = f"https://api.themoviedb.org/3/search/tv?api_key={settings.TMDB_API_KEY}&query={title}&include_adult=false&page=1"
     if year:
         url += f"&first_air_date_year={year}"
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.get(url)
-        if r.status_code != 200: return None
-        results = r.json().get("results", [])
-        if not results: return None
-        show_id = results[0].get("id")
-        d_req = await client.get(f"https://api.themoviedb.org/3/tv/{show_id}?api_key={settings.TMDB_API_KEY}")
-        if d_req.status_code != 200: return None
-        info = d_req.json()
-        ep_runtimes = info.get("episode_run_time") or []
-        last_episode = info.get("last_episode_to_air") or {}
-        ep_runtime = sum(ep_runtimes) / len(ep_runtimes) if ep_runtimes else (last_episode.get("runtime") or 25)
-        total_eps = info.get("number_of_episodes") or 1
-        return int(round(ep_runtime * total_eps))
+    client = _get_shared_client()
+    r = await client.get(url)
+    if r.status_code != 200:
+        return None
+    results = r.json().get("results", [])
+    if not results:
+        return None
+    show_id = results[0].get("id")
+    d_req = await client.get(f"https://api.themoviedb.org/3/tv/{show_id}?api_key={settings.TMDB_API_KEY}")
+    if d_req.status_code != 200:
+        return None
+    info = d_req.json()
+    ep_runtimes = info.get("episode_run_time") or []
+    last_episode = info.get("last_episode_to_air") or {}
+    ep_runtime = sum(ep_runtimes) / len(ep_runtimes) if ep_runtimes else (last_episode.get("runtime") or 25)
+    total_eps = info.get("number_of_episodes") or 1
+    return int(round(ep_runtime * total_eps))
 
 async def _fetch_anime_runtime(title: str) -> Optional[int]:
     import re
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.get(f"https://api.jikan.moe/v4/anime?q={title}&limit=1")
-        if r.status_code != 200: return None
-        data = r.json().get("data", [])
-        if not data: return None
-        anime = data[0]
-        duration_str = anime.get("duration", "")
-        episodes = anime.get("episodes") or 1
-        min_per_ep = 24
-        if "hr" in duration_str:
-            m = re.search(r'(\d+)\s*hr', duration_str)
-            if m:
-                min_per_ep = int(m.group(1)) * 60
-            m2 = re.search(r'(\d+)\s*min', duration_str)
-            if m2:
-                min_per_ep += int(m2.group(1))
-        else:
-            m = re.search(r'(\d+)\s*min', duration_str)
-            if m:
-                min_per_ep = int(m.group(1))
-        return int(round(min_per_ep * episodes))
+    client = _get_shared_client()
+    r = await client.get(f"https://api.jikan.moe/v4/anime?q={title}&limit=1")
+    if r.status_code != 200:
+        return None
+    data = r.json().get("data", [])
+    if not data:
+        return None
+    anime = data[0]
+    duration_str = anime.get("duration", "")
+    episodes = anime.get("episodes") or 1
+    min_per_ep = 24
+    if "hr" in duration_str:
+        m = re.search(r'(\d+)\s*hr', duration_str)
+        if m:
+            min_per_ep = int(m.group(1)) * 60
+        m2 = re.search(r'(\d+)\s*min', duration_str)
+        if m2:
+            min_per_ep += int(m2.group(1))
+    else:
+        m = re.search(r'(\d+)\s*min', duration_str)
+        if m:
+            min_per_ep = int(m.group(1))
+    return int(round(min_per_ep * episodes))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -349,18 +356,18 @@ TMDB_TV_GENRES = {
     10766: "Soap", 10767: "Talk", 10768: "War & Politics", 37: "Western",
 }
 
-# ── Persistent HTTP client (reuses TCP connections) ──────────
-_tmdb_client: httpx.AsyncClient | None = None
+# ── Persistent HTTP client (reuses TCP connections for all external APIs) ──
+_shared_client: httpx.AsyncClient | None = None
 
-def _get_tmdb_client() -> httpx.AsyncClient:
-    global _tmdb_client
-    if _tmdb_client is None or _tmdb_client.is_closed:
-        _tmdb_client = httpx.AsyncClient(
-            timeout=4.0,
+def _get_shared_client() -> httpx.AsyncClient:
+    global _shared_client
+    if _shared_client is None or _shared_client.is_closed:
+        _shared_client = httpx.AsyncClient(
+            timeout=10.0,
             http2=False,
             limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
         )
-    return _tmdb_client
+    return _shared_client
 
 # ── Simple in-memory cache (key → (timestamp, results)) ─────
 import time as _time
@@ -415,7 +422,7 @@ async def search_tmdb(
     )
 
     try:
-        client = _get_tmdb_client()
+        client = _get_shared_client()
         r = await client.get(url)
         if r.status_code != 200:
             logger.warning(f"TMDB search failed ({r.status_code}) for query='{query}'")

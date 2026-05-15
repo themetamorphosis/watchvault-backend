@@ -1,4 +1,5 @@
-from fastapi import Depends, HTTPException, status
+from typing import Optional
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import jwt, JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,18 +10,30 @@ from app.core import security
 from app.db import models
 from app.schemas import user as user_schema
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login", auto_error=False)
 
 async def get_db():
     async with AsyncSessionLocal() as session:
         yield session
 
-async def get_current_user(db: AsyncSession = Depends(get_db), token: str = Depends(oauth2_scheme)) -> models.User:
+async def get_current_user(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    token: Optional[str] = Depends(oauth2_scheme),
+) -> models.User:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+    # Check Authorization header first, then fall back to httpOnly cookie
+    if not token:
+        token = request.cookies.get("auth_token")
+
+    if not token:
+        raise credentials_exception
+
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[security.ALGORITHM])
         email: str = payload.get("sub")
@@ -29,10 +42,10 @@ async def get_current_user(db: AsyncSession = Depends(get_db), token: str = Depe
         token_data = user_schema.TokenData(email=email)
     except JWTError:
         raise credentials_exception
-        
+
     result = await db.execute(select(models.User).filter(models.User.email == token_data.email))
     user = result.scalars().first()
-    
+
     if user is None:
         raise credentials_exception
     return user

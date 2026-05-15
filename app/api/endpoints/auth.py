@@ -1,18 +1,20 @@
 from datetime import timedelta
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.api import dependencies
 from app.core import security, config
 from app.db import models
+from app.middleware.rate_limit import limiter
 from app.schemas import user as user_schema
 import uuid
 
 router = APIRouter()
 
 @router.post("/register", response_model=user_schema.User)
-async def register_user(user_in: user_schema.UserCreate, db: AsyncSession = Depends(dependencies.get_db)):
+@limiter.limit("3/minute")
+async def register_user(request: Request, user_in: user_schema.UserCreate, db: AsyncSession = Depends(dependencies.get_db)):
     result = await db.execute(select(models.User).filter(models.User.email == user_in.email))
     user = result.scalars().first()
     if user:
@@ -34,7 +36,8 @@ async def register_user(user_in: user_schema.UserCreate, db: AsyncSession = Depe
     return db_obj
 
 @router.post("/login", response_model=user_schema.Token)
-async def login_access_token(db: AsyncSession = Depends(dependencies.get_db), form_data: OAuth2PasswordRequestForm = Depends()):
+@limiter.limit("5/minute")
+async def login_access_token(request: Request, db: AsyncSession = Depends(dependencies.get_db), form_data: OAuth2PasswordRequestForm = Depends()):
     result = await db.execute(select(models.User).filter(models.User.email == form_data.username))
     user = result.scalars().first()
     if not user or not user.password:

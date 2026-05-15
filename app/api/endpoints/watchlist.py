@@ -105,6 +105,28 @@ async def create_watchlist_item(
 
     return db_item
 
+@router.patch("/{item_id}/toggle-favorite")
+async def toggle_favorite(
+    item_id: str,
+    current_user: models.User = Depends(dependencies.get_current_user),
+    db: AsyncSession = Depends(dependencies.get_db),
+):
+    result = await db.execute(
+        select(models.WatchlistItem).filter(
+            models.WatchlistItem.id == item_id,
+            models.WatchlistItem.userId == current_user.id,
+        )
+    )
+    db_item = result.scalars().first()
+    if not db_item:
+        raise HTTPException(status_code=404, detail="Watchlist item not found")
+
+    db_item.favorite = not db_item.favorite
+    await db.commit()
+    await db.refresh(db_item)
+    return {"id": db_item.id, "favorite": db_item.favorite}
+
+
 @router.patch("/{item_id}", response_model=watchlist_schema.WatchlistItem)
 async def update_watchlist_item(
     item_id: str,
