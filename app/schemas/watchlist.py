@@ -3,7 +3,7 @@ from typing import Optional, List, Literal
 from datetime import datetime
 
 MediaType = Literal["movie", "tv", "anime"]
-StatusType = Literal["watching", "completed", "on_hold", "dropped", "plan_to_watch"]
+StatusType = Literal["watched", "pending", "wishlist"]
 
 
 class WatchlistItemBase(BaseModel):
