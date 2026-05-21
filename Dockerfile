@@ -8,7 +8,7 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
 # Install system dependencies
-RUN apt-get update && apt-get -y install libpq-dev gcc && apt-get clean
+RUN apt-get update && apt-get -y install libpq-dev gcc libmagic-dev && apt-get clean
 
 COPY requirements.txt .
 
