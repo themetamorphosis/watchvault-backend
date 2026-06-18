@@ -21,7 +21,7 @@ ALLOWED_MAGIC = {
     b"GIF87a": "image/gif",
     b"GIF89a": "image/gif",
 }
-MAX_SIZE = 2 * 1024 * 1024  # 2MB
+MAX_SIZE = 10 * 1024 * 1024  # 10MB
 
 
 def _get_upload_dir() -> str:
@@ -51,7 +51,7 @@ async def upload_avatar(
     file.file.seek(0)
 
     if size > MAX_SIZE:
-        raise HTTPException(status_code=400, detail="File too large. Max 2MB.")
+        raise HTTPException(status_code=400, detail="File too large. Max 10MB.")
 
     content = await file.read()
 

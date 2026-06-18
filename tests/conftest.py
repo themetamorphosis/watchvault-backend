@@ -8,6 +8,8 @@ import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
+from sqlalchemy.pool import NullPool
+
 # Override settings before importing the app
 os.environ["SECRET_KEY"] = "test-secret-key-for-testing-only-32chars!!"
 os.environ["DATABASE_URL"] = os.environ.get(
@@ -23,7 +25,7 @@ from app.db import models  # noqa: E402
 from app.api import dependencies  # noqa: E402
 
 
-TEST_ENGINE = create_async_engine(os.environ["DATABASE_URL"], echo=False)
+TEST_ENGINE = create_async_engine(os.environ["DATABASE_URL"], echo=False, poolclass=NullPool)
 TestSessionLocal = async_sessionmaker(
     bind=TEST_ENGINE,
     class_=AsyncSession,

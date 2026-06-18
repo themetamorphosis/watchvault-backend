@@ -30,6 +30,7 @@ class TMDBSearchResult(BaseModel):
     title: str
     year: Optional[int] = None
     posterUrl: Optional[str] = None
+    backdropUrl: Optional[str] = None
     overview: Optional[str] = None
     mediaType: str  # "movie" | "tv"
     genres: List[str] = []

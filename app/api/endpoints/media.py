@@ -449,6 +449,7 @@ async def search_tmdb(
 
             year = int(date_str[:4]) if date_str and len(date_str) >= 4 else None
             poster_path = item.get("poster_path")
+            backdrop_path = item.get("backdrop_path")
             genres = [genre_map[g] for g in item.get("genre_ids", []) if g in genre_map]
 
             results.append(TMDBSearchResult(
@@ -456,6 +457,7 @@ async def search_tmdb(
                 title=title,
                 year=year,
                 posterUrl=f"https://image.tmdb.org/t/p/w185{poster_path}" if poster_path else None,
+                backdropUrl=f"https://image.tmdb.org/t/p/w1280{backdrop_path}" if backdrop_path else None,
                 overview=item.get("overview"),
                 mediaType=type,  # Keep original type (movie/tv/anime)
                 genres=genres,
@@ -469,5 +471,367 @@ async def search_tmdb(
     except Exception as e:
         logger.error(f"TMDB search error for query='{query}': {e}")
         return TMDBSearchResponse(results=[])
+
+
+# Helper function to parse raw TMDB results consistently
+def _parse_tmdb_results(raw_results: list, type: str, genre_map: dict) -> list[TMDBSearchResult]:
+    results = []
+    tmdb_type = "tv" if type in ("tv", "anime") else "movie"
+    for item in raw_results:
+        if tmdb_type == "movie":
+            title = item.get("title", "")
+            date_str = item.get("release_date", "")
+        else:
+            title = item.get("name", "")
+            date_str = item.get("first_air_date", "")
+
+        year = int(date_str[:4]) if date_str and len(date_str) >= 4 else None
+        poster_path = item.get("poster_path")
+        backdrop_path = item.get("backdrop_path")
+        genres = [genre_map[g] for g in item.get("genre_ids", []) if g in genre_map]
+
+        results.append(TMDBSearchResult(
+            tmdbId=item.get("id", 0),
+            title=title,
+            year=year,
+            posterUrl=f"https://image.tmdb.org/t/p/w342{poster_path}" if poster_path else None,
+            backdropUrl=f"https://image.tmdb.org/t/p/w1280{backdrop_path}" if backdrop_path else None,
+            overview=item.get("overview"),
+            mediaType=type,
+            genres=genres,
+            voteAverage=item.get("vote_average"),
+        ))
+    return results
+
+
+@router.get("/trending", response_model=TMDBSearchResponse)
+async def get_trending(
+    type: str = Query("movie", pattern="^(movie|tv|anime)$"),
+    time_window: str = Query("day", pattern="^(day|week)$"),
+):
+    """Get trending media (movies, TV shows, or anime) from TMDB."""
+    if not settings.TMDB_API_KEY:
+        return TMDBSearchResponse(results=[])
+
+    cache_key = f"trending:{type}:{time_window}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return TMDBSearchResponse(results=cached)
+
+    client = _get_shared_client()
+    results = []
+
+    try:
+        if type == "anime":
+            url = (
+                f"https://api.themoviedb.org/3/discover/tv"
+                f"?api_key={settings.TMDB_API_KEY}"
+                f"&with_genres=16"
+                f"&with_original_language=ja"
+                f"&sort_by=popularity.desc"
+                f"&page=1"
+            )
+            r = await client.get(url)
+            if r.status_code == 200:
+                raw_results = r.json().get("results", [])
+                results = _parse_tmdb_results(raw_results, "anime", TMDB_TV_GENRES)
+        else:
+            tmdb_type = "movie" if type == "movie" else "tv"
+            genre_map = TMDB_GENRES if type == "movie" else TMDB_TV_GENRES
+            url = f"https://api.themoviedb.org/3/trending/{tmdb_type}/{time_window}?api_key={settings.TMDB_API_KEY}"
+            r = await client.get(url)
+            if r.status_code == 200:
+                raw_results = r.json().get("results", [])
+                results = _parse_tmdb_results(raw_results, type, genre_map)
+
+        if results:
+            _cache_set(cache_key, results)
+        return TMDBSearchResponse(results=results)
+
+    except Exception as e:
+        logger.error(f"Trending fetch error for type={type}: {e}")
+        return TMDBSearchResponse(results=[])
+
+
+@router.get("/popular", response_model=TMDBSearchResponse)
+async def get_popular(
+    type: str = Query("movie", pattern="^(movie|tv|anime)$"),
+    page: int = Query(1, ge=1, le=100),
+):
+    """Get popular media from TMDB."""
+    if not settings.TMDB_API_KEY:
+        return TMDBSearchResponse(results=[])
+
+    cache_key = f"popular:{type}:{page}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return TMDBSearchResponse(results=cached)
+
+    client = _get_shared_client()
+    results = []
+
+    try:
+        if type == "anime":
+            url = (
+                f"https://api.themoviedb.org/3/discover/tv"
+                f"?api_key={settings.TMDB_API_KEY}"
+                f"&with_genres=16"
+                f"&with_original_language=ja"
+                f"&sort_by=popularity.desc"
+                f"&page={page}"
+            )
+            r = await client.get(url)
+            if r.status_code == 200:
+                raw_results = r.json().get("results", [])
+                results = _parse_tmdb_results(raw_results, "anime", TMDB_TV_GENRES)
+        else:
+            tmdb_type = "movie" if type == "movie" else "tv"
+            genre_map = TMDB_GENRES if type == "movie" else TMDB_TV_GENRES
+            url = f"https://api.themoviedb.org/3/{tmdb_type}/popular?api_key={settings.TMDB_API_KEY}&page={page}"
+            r = await client.get(url)
+            if r.status_code == 200:
+                raw_results = r.json().get("results", [])
+                results = _parse_tmdb_results(raw_results, type, genre_map)
+
+        if results:
+            _cache_set(cache_key, results)
+        return TMDBSearchResponse(results=results)
+
+    except Exception as e:
+        logger.error(f"Popular fetch error for type={type}: {e}")
+        return TMDBSearchResponse(results=[])
+
+
+@router.get("/top-rated", response_model=TMDBSearchResponse)
+async def get_top_rated(
+    type: str = Query("movie", pattern="^(movie|tv|anime)$"),
+    page: int = Query(1, ge=1, le=100),
+):
+    """Get top rated media from TMDB."""
+    if not settings.TMDB_API_KEY:
+        return TMDBSearchResponse(results=[])
+
+    cache_key = f"top-rated:{type}:{page}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return TMDBSearchResponse(results=cached)
+
+    client = _get_shared_client()
+    results = []
+
+    try:
+        if type == "anime":
+            url = (
+                f"https://api.themoviedb.org/3/discover/tv"
+                f"?api_key={settings.TMDB_API_KEY}"
+                f"&with_genres=16"
+                f"&with_original_language=ja"
+                f"&sort_by=vote_average.desc"
+                f"&vote_count.gte=150"
+                f"&page={page}"
+            )
+            r = await client.get(url)
+            if r.status_code == 200:
+                raw_results = r.json().get("results", [])
+                results = _parse_tmdb_results(raw_results, "anime", TMDB_TV_GENRES)
+        else:
+            tmdb_type = "movie" if type == "movie" else "tv"
+            genre_map = TMDB_GENRES if type == "movie" else TMDB_TV_GENRES
+            url = f"https://api.themoviedb.org/3/{tmdb_type}/top_rated?api_key={settings.TMDB_API_KEY}&page={page}"
+            r = await client.get(url)
+            if r.status_code == 200:
+                raw_results = r.json().get("results", [])
+                results = _parse_tmdb_results(raw_results, type, genre_map)
+
+        if results:
+            _cache_set(cache_key, results)
+        return TMDBSearchResponse(results=results)
+
+    except Exception as e:
+        logger.error(f"Top rated fetch error for type={type}: {e}")
+        return TMDBSearchResponse(results=[])
+
+
+@router.get("/discover", response_model=TMDBSearchResponse)
+async def discover_media(
+    type: str = Query("movie", pattern="^(movie|tv|anime)$"),
+    genre: Optional[str] = Query(None),
+    year: Optional[int] = Query(None),
+    decade: Optional[int] = Query(None),
+    sort_by: str = Query("popularity.desc", pattern="^(popularity.desc|vote_average.desc|primary_release_date.desc|first_air_date.desc)$"),
+    page: int = Query(1, ge=1, le=100),
+):
+    """Discover media from TMDB with advanced filtering and sorting."""
+    if not settings.TMDB_API_KEY:
+        return TMDBSearchResponse(results=[])
+
+    cache_key = f"discover:{type}:{genre}:{year}:{decade}:{sort_by}:{page}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return TMDBSearchResponse(results=cached)
+
+    client = _get_shared_client()
+    results = []
+
+    tmdb_type = "tv" if type in ("tv", "anime") else "movie"
+    genre_map = TMDB_TV_GENRES if tmdb_type == "tv" else TMDB_GENRES
+    name_to_id = {v.lower(): k for k, v in genre_map.items()}
+    if type == "anime":
+        name_to_id.update({v.lower(): k for k, v in TMDB_TV_GENRES.items()})
+
+    genre_ids = []
+    if genre:
+        for g in genre.split(","):
+            g = g.strip().lower()
+            if g.isdigit():
+                genre_ids.append(g)
+            elif g in name_to_id:
+                genre_ids.append(str(name_to_id[g]))
+
+    if type == "anime" and "16" not in genre_ids:
+        genre_ids.append("16")
+
+    url_params = [
+        f"api_key={settings.TMDB_API_KEY}",
+        f"page={page}",
+        f"sort_by={sort_by}",
+        "include_adult=false",
+    ]
+
+    if genre_ids:
+        url_params.append(f"with_genres={','.join(genre_ids)}")
+
+    if type == "anime":
+        url_params.append("with_original_language=ja")
+
+    if tmdb_type == "movie":
+        if year:
+            url_params.append(f"primary_release_year={year}")
+        elif decade:
+            url_params.append(f"primary_release_date.gte={decade}-01-01")
+            url_params.append(f"primary_release_date.lte={decade + 9}-12-31")
+    else:
+        if year:
+            url_params.append(f"first_air_date_year={year}")
+        elif decade:
+            url_params.append(f"first_air_date.gte={decade}-01-01")
+            url_params.append(f"first_air_date.lte={decade + 9}-12-31")
+
+    url = f"https://api.themoviedb.org/3/discover/{tmdb_type}?" + "&".join(url_params)
+
+    try:
+        r = await client.get(url)
+        if r.status_code == 200:
+            raw_results = r.json().get("results", [])
+            results = _parse_tmdb_results(raw_results, type, genre_map)
+
+        if results:
+            _cache_set(cache_key, results)
+        return TMDBSearchResponse(results=results)
+
+    except Exception as e:
+        logger.error(f"Discover fetch error: {e}")
+        return TMDBSearchResponse(results=[])
+
+
+@router.get("/details")
+async def get_media_details(
+    tmdb_id: int = Query(...),
+    type: str = Query("movie", pattern="^(movie|tv|anime)$"),
+):
+    """Fetch complete details, credits, and trailer for a movie/TV show from TMDB."""
+    if not settings.TMDB_API_KEY:
+        return {}
+
+    tmdb_type = "tv" if type in ("tv", "anime") else "movie"
+    client = _get_shared_client()
+    
+    url_details = f"https://api.themoviedb.org/3/{tmdb_type}/{tmdb_id}?api_key={settings.TMDB_API_KEY}"
+    url_credits = f"https://api.themoviedb.org/3/{tmdb_type}/{tmdb_id}/credits?api_key={settings.TMDB_API_KEY}"
+    url_videos = f"https://api.themoviedb.org/3/{tmdb_type}/{tmdb_id}/videos?api_key={settings.TMDB_API_KEY}"
+
+    try:
+        # Fetch details
+        r_details = await client.get(url_details)
+        if r_details.status_code != 200:
+            return {"error": "Failed to fetch details"}
+        details = r_details.json()
+
+        # Fetch credits
+        r_credits = await client.get(url_credits)
+        credits = r_credits.json() if r_credits.status_code == 200 else {"cast": [], "crew": []}
+
+        # Fetch videos
+        r_videos = await client.get(url_videos)
+        videos = r_videos.json() if r_videos.status_code == 200 else {"results": []}
+
+        # Parse crew
+        crew = credits.get("crew", [])
+        directors = [c.get("name") for c in crew if c.get("job") == "Director"]
+        writers = [c.get("name") for c in crew if c.get("job") in ("Writer", "Screenplay", "Teleplay", "Author")]
+        composers = [c.get("name") for c in crew if c.get("job") in ("Original Music Composer", "Music", "Composer")]
+        
+        # Parse cast
+        cast = credits.get("cast", [])
+        top_cast = []
+        for member in cast[:8]:
+            profile_path = member.get("profile_path")
+            top_cast.append({
+                "name": member.get("name"),
+                "character": member.get("character"),
+                "profileUrl": f"https://image.tmdb.org/t/p/w185{profile_path}" if profile_path else None
+            })
+
+        # Parse trailer video key
+        video_results = videos.get("results", [])
+        trailer_key = None
+        for video in video_results:
+            if video.get("site") == "YouTube" and video.get("type") == "Trailer":
+                trailer_key = video.get("key")
+                break
+        
+        # If no trailer, fallback to Teaser or any YouTube video
+        if not trailer_key and video_results:
+            for video in video_results:
+                if video.get("site") == "YouTube":
+                    trailer_key = video.get("key")
+                    break
+
+        # Map details fields
+        title = details.get("title") if tmdb_type == "movie" else details.get("name")
+        date_str = details.get("release_date") if tmdb_type == "movie" else details.get("first_air_date")
+        year = int(date_str[:4]) if date_str and len(date_str) >= 4 else None
+        
+        genres = [g.get("name") for g in details.get("genres", [])]
+        poster_path = details.get("poster_path")
+        backdrop_path = details.get("backdrop_path")
+
+        # Runtime extraction
+        runtime = details.get("runtime")
+        if not runtime and tmdb_type == "tv":
+            run_times = details.get("episode_run_time") or []
+            runtime = run_times[0] if run_times else None
+
+        return {
+            "tmdbId": tmdb_id,
+            "title": title,
+            "year": year,
+            "overview": details.get("overview"),
+            "genres": genres,
+            "voteAverage": details.get("vote_average"),
+            "voteCount": details.get("vote_count"),
+            "posterUrl": f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else None,
+            "backdropUrl": f"https://image.tmdb.org/t/p/w1280{backdrop_path}" if backdrop_path else None,
+            "runtime": runtime,
+            "directors": directors,
+            "writers": writers,
+            "composers": composers,
+            "cast": top_cast,
+            "trailerKey": trailer_key
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching details for tmdb_id={tmdb_id}: {e}")
+        return {"error": str(e)}
 
 

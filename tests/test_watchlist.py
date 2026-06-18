@@ -7,7 +7,7 @@ async def _create_item(client: AsyncClient, auth_headers: dict, **overrides) -> 
     payload = {
         "title": f"Test Movie {uuid.uuid4().hex[:6]}",
         "mediaType": "movie",
-        "status": "watching",
+        "status": "pending",
         "year": 2024,
         **overrides,
     }
@@ -21,14 +21,14 @@ async def test_create_item(client: AsyncClient, auth_headers):
     data = await _create_item(client, auth_headers)
     assert "id" in data
     assert data["mediaType"] == "movie"
-    assert data["status"] == "watching"
+    assert data["status"] == "pending"
 
 
 @pytest.mark.asyncio
 async def test_create_item_missing_title(client: AsyncClient, auth_headers):
     res = await client.post("/api/v1/watchlist", json={
         "mediaType": "movie",
-        "status": "watching",
+        "status": "pending",
     }, headers=auth_headers)
     assert res.status_code == 422
 
@@ -38,7 +38,7 @@ async def test_create_item_invalid_media_type(client: AsyncClient, auth_headers)
     res = await client.post("/api/v1/watchlist", json={
         "title": "Bad Type",
         "mediaType": "book",
-        "status": "watching",
+        "status": "pending",
     }, headers=auth_headers)
     assert res.status_code == 422
 
@@ -58,7 +58,7 @@ async def test_create_item_no_auth(client: AsyncClient):
     res = await client.post("/api/v1/watchlist", json={
         "title": "No Auth",
         "mediaType": "movie",
-        "status": "watching",
+        "status": "pending",
     })
     assert res.status_code == 401
 
@@ -96,7 +96,7 @@ async def test_list_items_only_own(client: AsyncClient, auth_headers, db, test_u
         userId=other.id,
         title="Other Movie",
         mediaType="movie",
-        status="watching",
+        status="pending",
     )
     db.add(other_item)
     await db.commit()
@@ -113,18 +113,18 @@ async def test_update_item(client: AsyncClient, auth_headers):
     item = await _create_item(client, auth_headers, title="Updatable")
 
     res = await client.patch(f"/api/v1/watchlist/{item['id']}", json={
-        "status": "completed",
+        "status": "watched",
         "favorite": True,
     }, headers=auth_headers)
     assert res.status_code == 200
-    assert res.json()["status"] == "completed"
+    assert res.json()["status"] == "watched"
     assert res.json()["favorite"] is True
 
 
 @pytest.mark.asyncio
 async def test_update_item_not_found(client: AsyncClient, auth_headers):
     res = await client.patch("/api/v1/watchlist/nonexistent-id", json={
-        "status": "completed",
+        "status": "watched",
     }, headers=auth_headers)
     assert res.status_code == 404
 
@@ -155,6 +155,6 @@ async def test_create_duplicate_item(client: AsyncClient, auth_headers):
     res = await client.post("/api/v1/watchlist", json={
         "title": title,
         "mediaType": "movie",
-        "status": "watching",
+        "status": "pending",
     }, headers=auth_headers)
     assert res.status_code == 400

@@ -2,11 +2,10 @@
 asyncio_mode = "auto"
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
-
-[tool.pytest]
 env = [
     "SECRET_KEY=test-secret-key-for-testing-only-32chars!!",
     "DATABASE_URL=postgresql+asyncpg://watchvault:watchvault@localhost:5432/watchvault_db_test",
     "TMDB_API_KEY=test_tmdb_key",
     "FRONTEND_URL=http://localhost:3000",
 ]
+
