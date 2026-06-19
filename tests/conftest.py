@@ -24,6 +24,7 @@ from app.db.database import Base  # noqa: E402
 from app.core import security  # noqa: E402
 from app.db import models  # noqa: E402
 from app.api import dependencies  # noqa: E402
+from app.middleware.rate_limit import limiter  # noqa: E402
 
 
 TEST_ENGINE = create_async_engine(os.environ["DATABASE_URL"], echo=False, poolclass=NullPool)
@@ -43,6 +44,8 @@ def event_loop():
 
 @pytest_asyncio.fixture(autouse=True)
 async def setup_db():
+    # Reset rate limiter between tests
+    limiter.reset()
     async with TEST_ENGINE.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield

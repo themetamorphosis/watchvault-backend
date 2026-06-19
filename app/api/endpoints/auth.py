@@ -47,11 +47,15 @@ async def login_access_token(request: Request, db: AsyncSession = Depends(depend
     if not security.verify_password(form_data.password, user.password):
         raise HTTPException(status_code=400, detail="Incorrect email or password")
 
+    # Issue new token family on login (invalidates any existing refresh tokens)
+    user.token_family = str(uuid.uuid4())
+    await db.commit()
+
     access_token_expires = timedelta(minutes=config.settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = security.create_access_token(
         subject=user.email, expires_delta=access_token_expires
     )
-    refresh_token = security.create_refresh_token(subject=user.email)
+    refresh_token = security.create_refresh_token(subject=user.email, family=user.token_family)
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
@@ -77,24 +81,47 @@ async def refresh_access_token(request: Request, db: AsyncSession = Depends(depe
         raise HTTPException(status_code=401, detail="Invalid token type")
 
     email = payload.get("sub")
+    token_family = payload.get("family")
     if not email:
         raise HTTPException(status_code=401, detail="Invalid token payload")
 
-    # Verify user still exists
+    # Verify user still exists and token family matches
     result = await db.execute(select(models.User).filter(models.User.email == email))
     user = result.scalars().first()
     if not user:
         raise HTTPException(status_code=401, detail="User no longer exists")
 
+    if not token_family or user.token_family != token_family:
+        # Family mismatch = replay attack or revoked token
+        # Invalidate the entire family as a safety measure
+        user.token_family = None
+        await db.commit()
+        raise HTTPException(status_code=401, detail="Refresh token has been revoked")
+
+    # Rotate: new family invalidates this and all other tokens in the old family
+    user.token_family = str(uuid.uuid4())
+    await db.commit()
+
     access_token_expires = timedelta(minutes=config.settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     new_access = security.create_access_token(subject=email, expires_delta=access_token_expires)
-    new_refresh = security.create_refresh_token(subject=email)
+    new_refresh = security.create_refresh_token(subject=email, family=user.token_family)
 
     return {
         "access_token": new_access,
         "refresh_token": new_refresh,
         "token_type": "bearer",
     }
+
+
+@router.post("/logout")
+async def logout(
+    current_user: models.User = Depends(dependencies.get_current_user),
+    db: AsyncSession = Depends(dependencies.get_db)
+):
+    """Revoke all refresh tokens for this user by clearing their token family."""
+    current_user.token_family = None
+    await db.commit()
+    return {"ok": True}
 
 
 @router.get("/me", response_model=user_schema.User)

@@ -23,8 +23,12 @@ class Settings(BaseSettings):
     @field_validator("SECRET_KEY")
     @classmethod
     def secret_key_required(cls, v: str) -> str:
-        if not v:
-            raise ValueError("SECRET_KEY must be set in environment or .env file")
+        _blocked = {"your-super-secret-key-change-in-production", "", "change-me", "secret"}
+        if not v or v.lower().strip() in _blocked:
+            raise ValueError(
+                "SECRET_KEY must be set to a real value — "
+                "generate one with: python -c \"import secrets; print(secrets.token_urlsafe(64))\""
+            )
         return v
 
     @field_validator("DATABASE_URL")

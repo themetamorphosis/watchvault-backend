@@ -70,8 +70,10 @@ async def test_list_items(client: AsyncClient, auth_headers):
 
     res = await client.get("/api/v1/watchlist", headers=auth_headers)
     assert res.status_code == 200
-    items = res.json()
+    data = res.json()
+    items = data["items"] if isinstance(data, dict) else data
     assert len(items) >= 2
+    assert data["total"] >= 2 if isinstance(data, dict) else True
 
 
 @pytest.mark.asyncio
@@ -102,7 +104,8 @@ async def test_list_items_only_own(client: AsyncClient, auth_headers, db, test_u
     await db.commit()
 
     res = await client.get("/api/v1/watchlist", headers=auth_headers)
-    items = res.json()
+    data = res.json()
+    items = data["items"] if isinstance(data, dict) else data
     titles = [i["title"] for i in items]
     assert "My Movie" in titles
     assert "Other Movie" not in titles
@@ -138,7 +141,9 @@ async def test_delete_item(client: AsyncClient, auth_headers):
 
     # Verify it's gone
     res = await client.get("/api/v1/watchlist", headers=auth_headers)
-    ids = [i["id"] for i in res.json()]
+    data = res.json()
+    items = data["items"] if isinstance(data, dict) else data
+    ids = [i["id"] for i in items]
     assert item["id"] not in ids
 
 

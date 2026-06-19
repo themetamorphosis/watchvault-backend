@@ -1,7 +1,7 @@
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 from app.api import dependencies
 from app.db import models
 from app.schemas import watchlist as watchlist_schema
@@ -28,34 +28,43 @@ async def _background_enrich(title: str, media_type: str, year: int | None, item
                     select(models.WatchlistItem).filter(models.WatchlistItem.id == item_id)
                 )
                 item = result.scalars().first()
-                if item:
-                    changed = False
-                    if not item.coverUrl and cached.coverUrl:
-                        item.coverUrl = cached.coverUrl
-                        changed = True
-                    if (not item.genres or len(item.genres) == 0) and cached.genres and len(cached.genres) > 0:
-                        item.genres = cached.genres
-                        changed = True
-                    if item.runtime is None and cached.runtime is not None:
-                        item.runtime = cached.runtime
-                        changed = True
-                    if not item.description and cached.description:
-                        item.description = cached.description
-                        changed = True
-                    if changed:
-                        await db.commit()
-                        logger.info(f"Background enriched watchlist item '{title}' from cache")
-        except Exception as e:
-            logger.warning(f"Background enrichment failed for '{title}': {e}")
+                if not item:
+                    return  # Item deleted before enrichment completed
+                changed = False
+                if not item.coverUrl and cached.coverUrl:
+                    item.coverUrl = cached.coverUrl
+                    changed = True
+                if (not item.genres or len(item.genres) == 0) and cached.genres and len(cached.genres) > 0:
+                    item.genres = cached.genres
+                    changed = True
+                if item.runtime is None and cached.runtime is not None:
+                    item.runtime = cached.runtime
+                    changed = True
+                if not item.description and cached.description:
+                    item.description = cached.description
+                    changed = True
+                if changed:
+                    await db.commit()
+                    logger.info(f"Background enriched watchlist item '{title}' from cache")
+        except Exception:
+            await db.rollback()
+            logger.exception(f"Background enrichment failed for '{title}'")
 
 
-@router.get("", response_model=List[watchlist_schema.WatchlistItem])
+@router.get("")
 async def get_watchlist(
     current_user: models.User = Depends(dependencies.get_current_user),
     db: AsyncSession = Depends(dependencies.get_db),
     limit: int = Query(default=0, ge=0, le=500, description="Max items to return. 0 = all"),
     offset: int = Query(default=0, ge=0, description="Number of items to skip"),
 ):
+    # Get total count
+    count_stmt = select(func.count()).select_from(models.WatchlistItem).where(
+        models.WatchlistItem.userId == current_user.id
+    )
+    total = (await db.execute(count_stmt)).scalar()
+
+    # Get page
     q = (
         select(models.WatchlistItem)
         .filter(models.WatchlistItem.userId == current_user.id)
@@ -66,7 +75,15 @@ async def get_watchlist(
     if limit > 0:
         q = q.limit(limit)
     result = await db.execute(q)
-    return result.scalars().all()
+    items = result.scalars().all()
+
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "has_more": offset + (limit or total) < total,
+    }
 
 @router.post("", response_model=watchlist_schema.WatchlistItem)
 async def create_watchlist_item(
@@ -118,6 +135,9 @@ async def create_watchlist_item(
 
 
 
+MAX_BATCH_SIZE = 100
+
+
 @router.post("/batch", response_model=dict)
 async def batch_import_items(
     items: List[watchlist_schema.WatchlistItemCreate],
@@ -126,6 +146,11 @@ async def batch_import_items(
     db: AsyncSession = Depends(dependencies.get_db)
 ):
     """Import multiple items at once. Skips duplicates silently."""
+    if len(items) > MAX_BATCH_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Batch size {len(items)} exceeds maximum of {MAX_BATCH_SIZE}"
+        )
     imported = 0
     skipped = 0
     
@@ -203,6 +228,15 @@ async def toggle_favorite(
     return {"id": db_item.id, "favorite": db_item.favorite}
 
 
+ALLOWED_UPDATE_FIELDS = {
+    "title", "overview", "poster_path", "backdrop_path",
+    "release_date", "rating", "media_type", "status",
+    "genres", "runtime", "number_of_seasons",
+    "next_episode_to_air", "notes", "tags",
+    "favorite", "priority", "watched_at",
+    "coverUrl", "description", "year", "endYear", "running",
+}
+
 @router.patch("/{item_id}", response_model=watchlist_schema.WatchlistItem)
 async def update_watchlist_item(
     item_id: str,
@@ -217,7 +251,8 @@ async def update_watchlist_item(
 
     update_data = item_in.model_dump(exclude_unset=True)
     for field, value in update_data.items():
-        setattr(db_item, field, value)
+        if field in ALLOWED_UPDATE_FIELDS:
+            setattr(db_item, field, value)
 
     await db.commit()
     await db.refresh(db_item)

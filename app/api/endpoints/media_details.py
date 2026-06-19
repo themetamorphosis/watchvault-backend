@@ -3,7 +3,8 @@
 Fetches complete movie/TV details including credits and trailers from TMDB.
 """
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, HTTPException
+from fastapi.responses import JSONResponse
 import logging
 
 from app.core.config import settings
@@ -11,6 +12,7 @@ from app.services.media_service import get_shared_client
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
 @router.get("/details")
 async def get_media_details(
     tmdb_id: int = Query(...),
@@ -18,7 +20,7 @@ async def get_media_details(
 ):
     """Fetch complete details, credits, and trailer for a movie/TV show from TMDB."""
     if not settings.TMDB_API_KEY:
-        return {}
+        raise HTTPException(status_code=503, detail="TMDB API key not configured")
 
     tmdb_type = "tv" if type in ("tv", "anime") else "movie"
     client = get_shared_client()
@@ -29,8 +31,11 @@ async def get_media_details(
 
     try:
         r_details = await client.get(url_details)
+        if r_details.status_code == 404:
+            raise HTTPException(status_code=404, detail="Media not found on TMDB")
         if r_details.status_code != 200:
-            return {"error": "Failed to fetch details"}
+            logger.error("TMDB details returned %d for tmdb_id=%d", r_details.status_code, tmdb_id)
+            raise HTTPException(status_code=502, detail="Failed to fetch media details from TMDB")
         details = r_details.json()
 
         r_credits = await client.get(url_credits)
@@ -97,6 +102,8 @@ async def get_media_details(
             "trailerKey": trailer_key
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error fetching details for tmdb_id={tmdb_id}: {e}")
-        return {"error": str(e)}
+        logger.error("Error fetching details for tmdb_id=%d: %s", tmdb_id, e, exc_info=True)
+        raise HTTPException(status_code=502, detail="Failed to fetch media details")

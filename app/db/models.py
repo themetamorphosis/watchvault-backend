@@ -1,10 +1,9 @@
 import uuid
-from sqlalchemy import Column, String, Boolean, Integer, DateTime, ForeignKey, select, UniqueConstraint, ARRAY
+from sqlalchemy import Column, String, Boolean, Integer, DateTime, ForeignKey, UniqueConstraint, Index
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.sql import func
 from app.db.database import Base
-from typing import List
 
 class User(Base):
     __tablename__ = "User"
@@ -15,6 +14,7 @@ class User(Base):
     emailVerified = Column(DateTime(timezone=True), nullable=True)
     image = Column(String, nullable=True)
     password = Column(String, nullable=True) # hashed via bcryptjs
+    token_family = Column(String, index=True, nullable=True)
 
     createdAt = Column(DateTime(timezone=True), server_default=func.now())
     updatedAt = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
@@ -50,6 +50,8 @@ class WatchlistItem(Base):
 
     __table_args__ = (
         UniqueConstraint('userId', 'title', 'mediaType', name='watchlistitem_userid_title_mediatype_key'),
+        Index('ix_watchlistitem_status', 'status'),
+        Index('ix_watchlistitem_mediatype', 'mediaType'),
     )
 
 
