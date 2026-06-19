@@ -1,5 +1,6 @@
 import uuid
 import logging
+import sqlalchemy
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -9,6 +10,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.api.api import api_router
+from app.services.cleanup import run_cleanup
 from app.core.config import settings
 from app.db.database import engine, Base
 from app.middleware.rate_limit import limiter
@@ -21,6 +23,12 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # Run startup cleanup to repair any inconsistent rows
+    from app.db.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        await run_cleanup(db)
+
     yield
 
 
@@ -35,13 +43,18 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 # --- CORS ---
+# CSRF protection is achieved through the combination of:
+#   1. CORS origin allowlist — blocks cross-origin requests from other sites
+#   2. SameSite=Strict auth cookies — browser won't attach cookies on cross-origin
+#   3. Rate limiting on auth endpoints — limits brute-force attempts
+# This is the recommended pattern for API backends consumed by a separate frontend.
 origins = [o.strip() for o in settings.FRONTEND_URL.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "X-Request-ID"],
 )
 
 
@@ -74,6 +87,16 @@ async def add_security_headers(request: Request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' https://image.tmdb.org https: data:; "
+        "connect-src 'self' https://api.themoviedb.org https://api.tvmaze.com https://api.jikan.moe https://api.deepseek.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "frame-ancestors 'none'"
+    )
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     return response
 
 
@@ -89,7 +112,8 @@ def root():
 async def health():
     try:
         async with engine.connect() as conn:
-            await conn.execute(__import__("sqlalchemy").text("SELECT 1"))
+            await conn.execute(sqlalchemy.text("SELECT 1"))
         return {"status": "ok", "db": "connected"}
-    except Exception as e:
-        return JSONResponse(status_code=503, content={"status": "unhealthy", "db": str(e)})
+    except Exception:
+        logger.error("Health check failed", exc_info=True)
+        return JSONResponse(status_code=503, content={"status": "unhealthy", "db": "connection failed"})

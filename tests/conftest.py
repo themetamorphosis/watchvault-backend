@@ -18,6 +18,7 @@ os.environ["DATABASE_URL"] = os.environ.get(
 )
 os.environ["TMDB_API_KEY"] = "test_tmdb_key"
 os.environ["FRONTEND_URL"] = "http://localhost:3000"
+os.environ["ENVIRONMENT"] = "test"
 
 from app.db.database import Base  # noqa: E402
 from app.core import security  # noqa: E402

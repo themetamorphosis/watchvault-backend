@@ -12,6 +12,7 @@ import uuid
 
 router = APIRouter()
 
+
 @router.post("/register", response_model=user_schema.User)
 @limiter.limit("3/minute")
 async def register_user(request: Request, user_in: user_schema.UserCreate, db: AsyncSession = Depends(dependencies.get_db)):
@@ -35,6 +36,7 @@ async def register_user(request: Request, user_in: user_schema.UserCreate, db: A
     await db.refresh(db_obj)
     return db_obj
 
+
 @router.post("/login", response_model=user_schema.Token)
 @limiter.limit("5/minute")
 async def login_access_token(request: Request, db: AsyncSession = Depends(dependencies.get_db), form_data: OAuth2PasswordRequestForm = Depends()):
@@ -44,16 +46,61 @@ async def login_access_token(request: Request, db: AsyncSession = Depends(depend
         raise HTTPException(status_code=400, detail="Incorrect email or password")
     if not security.verify_password(form_data.password, user.password):
         raise HTTPException(status_code=400, detail="Incorrect email or password")
-    
+
     access_token_expires = timedelta(minutes=config.settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = security.create_access_token(
         subject=user.email, expires_delta=access_token_expires
     )
-    return {"access_token": access_token, "token_type": "bearer"}
+    refresh_token = security.create_refresh_token(subject=user.email)
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+    }
+
+
+@router.post("/refresh", response_model=user_schema.Token)
+@limiter.limit("10/minute")
+async def refresh_access_token(request: Request, db: AsyncSession = Depends(dependencies.get_db)):
+    """Exchange a valid refresh token for a new access + refresh token pair."""
+    body = await request.json()
+    refresh_token = body.get("refresh_token")
+    if not refresh_token:
+        raise HTTPException(status_code=400, detail="refresh_token is required")
+
+    try:
+        payload = security.decode_token(refresh_token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+
+    if not security.verify_token_type(payload, "refresh"):
+        raise HTTPException(status_code=401, detail="Invalid token type")
+
+    email = payload.get("sub")
+    if not email:
+        raise HTTPException(status_code=401, detail="Invalid token payload")
+
+    # Verify user still exists
+    result = await db.execute(select(models.User).filter(models.User.email == email))
+    user = result.scalars().first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User no longer exists")
+
+    access_token_expires = timedelta(minutes=config.settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    new_access = security.create_access_token(subject=email, expires_delta=access_token_expires)
+    new_refresh = security.create_refresh_token(subject=email)
+
+    return {
+        "access_token": new_access,
+        "refresh_token": new_refresh,
+        "token_type": "bearer",
+    }
+
 
 @router.get("/me", response_model=user_schema.User)
 async def read_current_user(current_user: models.User = Depends(dependencies.get_current_user)):
     return current_user
+
 
 @router.patch("/me", response_model=user_schema.User)
 async def update_current_user(
@@ -67,7 +114,7 @@ async def update_current_user(
             setattr(current_user, field, security.get_password_hash(value))
         else:
             setattr(current_user, field, value)
-    
+
     db.add(current_user)
     await db.commit()
     await db.refresh(current_user)
