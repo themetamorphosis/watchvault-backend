@@ -14,7 +14,7 @@ from sqlalchemy.pool import NullPool
 os.environ["SECRET_KEY"] = "test-secret-key-for-testing-only-32chars!!"
 os.environ["DATABASE_URL"] = os.environ.get(
     "TEST_DATABASE_URL",
-    "postgresql+asyncpg://watchvault:watchvault@localhost:5432/watchvault_db_test",
+    "postgresql+asyncpg://lumiere:lumiere@localhost:5432/lumiere_db_test",
 )
 os.environ["TMDB_API_KEY"] = "test_tmdb_key"
 os.environ["FRONTEND_URL"] = "http://localhost:3000"
