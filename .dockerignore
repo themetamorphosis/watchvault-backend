@@ -1,0 +1,29 @@
+# Without this, `COPY . .` puts secrets and local state into the image.
+.env
+.env.*
+!.env.example
+
+.git
+.github
+.gitignore
+
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.coverage
+.coverage.*
+htmlcov
+.mypy_cache
+.ruff_cache
+
+# Local upload storage — the image gets a volume mount instead.
+uploads/
+
+tests/
+.vscode/
+*.sql
+*.md
+Dockerfile
+.dockerignore

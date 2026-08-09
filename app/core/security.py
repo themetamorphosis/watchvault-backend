@@ -7,9 +7,22 @@ from app.core.config import settings
 ALGORITHM = "HS256"
 TOKEN_TYPE_KEY = "type"
 
+# bcrypt refuses inputs over 72 bytes rather than truncating them.
+BCRYPT_MAX_BYTES = 72
+
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
+    """Check a password against a hash.
+
+    An over-long candidate is a failed match, not an error: no hash this
+    function ever produced could have come from one. Returning False keeps the
+    ValueError out of the login path, which takes its input from
+    OAuth2PasswordRequestForm and so never passes through Pydantic validation.
+    """
+    encoded = plain_password.encode("utf-8")
+    if len(encoded) > BCRYPT_MAX_BYTES:
+        return False
+    return bcrypt.checkpw(encoded, hashed_password.encode("utf-8"))
 
 
 def get_password_hash(password: str) -> str:

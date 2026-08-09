@@ -52,6 +52,10 @@ class WatchlistItem(Base):
         UniqueConstraint('userId', 'title', 'mediaType', name='watchlistitem_userid_title_mediatype_key'),
         Index('ix_watchlistitem_status', 'status'),
         Index('ix_watchlistitem_mediatype', 'mediaType'),
+        # Matches the ORDER BY in GET /watchlist, which reads one user's rows
+        # newest-first. Without it that sort is unindexed and every page load
+        # sorts the user's whole library.
+        Index('ix_watchlistitem_userid_updatedat', 'userId', updatedAt.desc()),
     )
 
 

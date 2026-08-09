@@ -1,14 +1,20 @@
-fastapi>=0.115.0
-uvicorn[standard]>=0.34.0
-sqlalchemy>=2.0.28
-asyncpg>=0.29.0
-python-jose[cryptography]>=3.3.0
-bcrypt>=4.0.0
-pydantic>=2.6.0
-pydantic-settings>=2.2.0
-python-multipart>=0.0.9
-httpx>=0.27.0
-aiofiles>=23.2.0
-email-validator>=2.0.0
-slowapi>=0.1.9
-alembic>=1.13.0
+# Pinned exactly. Generated from requirements.in — do not hand-edit versions;
+# change the range in requirements.in and recompile.
+#
+# Unpinned ranges are how bcrypt silently moved to 5.0, which raises on
+# passwords over 72 bytes where 4.x truncated them — turning a validation
+# error into a 500 with no code change on our side.
+aiofiles==25.1.0
+alembic==1.18.4
+asyncpg==0.31.0
+bcrypt==5.0.0
+email-validator==2.3.0
+fastapi==0.136.1
+httpx==0.28.1
+pydantic==2.13.4
+pydantic-settings==2.14.1
+python-jose[cryptography]==3.5.0
+python-multipart==0.0.29
+slowapi==0.1.9
+SQLAlchemy==2.0.49
+uvicorn[standard]==0.47.0

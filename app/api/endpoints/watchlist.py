@@ -8,6 +8,7 @@ from app.api import dependencies
 from app.db import models
 from app.schemas import watchlist as watchlist_schema
 from app.api.endpoints.media import get_cached, enrich_media_cache
+from app.services.media_service import get_cached_bulk
 from app.db.database import AsyncSessionLocal
 import uuid
 import logging
@@ -52,11 +53,15 @@ async def _background_enrich(title: str, media_type: str, year: int | None, item
             logger.exception(f"Background enrichment failed for '{title}'")
 
 
-@router.get("")
+@router.get("", response_model=watchlist_schema.WatchlistPage)
 async def get_watchlist(
     current_user: models.User = Depends(dependencies.get_current_user),
     db: AsyncSession = Depends(dependencies.get_db),
-    limit: int = Query(default=0, ge=0, le=500, description="Max items to return. 0 = all"),
+    # Defaults to a page rather than the whole library. `0` still means "all"
+    # for callers that ask for it explicitly. Flipping this default is safe
+    # only because the frontend now always sends an explicit limit and follows
+    # `has_more` — see REMEDIATION_PLAN.md 2.6/2.10 for the deploy ordering.
+    limit: int = Query(default=100, ge=0, le=500, description="Max items to return. 0 = all"),
     offset: int = Query(default=0, ge=0, description="Number of items to skip"),
 ):
     # Get total count
@@ -147,7 +152,7 @@ async def create_watchlist_item(
 MAX_BATCH_SIZE = 100
 
 
-@router.post("/batch", response_model=dict)
+@router.post("/batch", response_model=watchlist_schema.BatchImportResult)
 async def batch_import_items(
     items: List[watchlist_schema.WatchlistItemCreate],
     background_tasks: BackgroundTasks,
@@ -162,14 +167,19 @@ async def batch_import_items(
         )
     skipped = 0
 
-    # Get existing items for this user to check duplicates
+    # Existing titles for this user, projected rather than hydrated: only the
+    # title and type are needed to build the duplicate set.
     result = await db.execute(
-        select(models.WatchlistItem).filter(
-            models.WatchlistItem.userId == current_user.id
-        )
+        select(
+            func.lower(models.WatchlistItem.title), models.WatchlistItem.mediaType
+        ).filter(models.WatchlistItem.userId == current_user.id)
     )
-    existing_items = result.scalars().all()
-    existing_set = {(item.title.lower(), item.mediaType) for item in existing_items}
+    existing_set = {(title, media_type) for title, media_type in result.all()}
+
+    # One cache lookup for the whole batch instead of one per item.
+    cache_by_key = await get_cached_bulk(
+        db, [(i.title, i.mediaType, i.year) for i in items]
+    )
 
     rows: list[dict] = []
     pending: dict[str, tuple[str, str, int | None]] = {}
@@ -183,8 +193,7 @@ async def batch_import_items(
             skipped += 1
             continue
 
-        # Check the global cache for pre-existing metadata
-        cached = await get_cached(db, item_in.title, item_in.mediaType, item_in.year)
+        cached = cache_by_key.get((item_in.title, item_in.mediaType, item_in.year))
         item_data = item_in.model_dump()
 
         # Auto-populate from cache if available
@@ -233,7 +242,10 @@ async def batch_import_items(
     return {"success": True, "imported": imported, "skipped": skipped}
 
 
-@router.patch("/{item_id}/toggle-favorite")
+@router.patch(
+    "/{item_id}/toggle-favorite",
+    response_model=watchlist_schema.FavoriteToggleResult,
+)
 async def toggle_favorite(
     item_id: str,
     current_user: models.User = Depends(dependencies.get_current_user),
@@ -284,7 +296,7 @@ async def update_watchlist_item(
     await db.refresh(db_item)
     return db_item
 
-@router.delete("/{item_id}")
+@router.delete("/{item_id}", response_model=watchlist_schema.DeleteResult)
 async def delete_watchlist_item(
     item_id: str,
     current_user: models.User = Depends(dependencies.get_current_user),

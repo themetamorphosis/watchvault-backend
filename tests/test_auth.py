@@ -110,7 +110,13 @@ async def test_update_me_name(client: AsyncClient, test_user, auth_headers):
 
 @pytest.mark.asyncio
 async def test_update_me_password(client: AsyncClient, test_user, auth_headers):
-    res = await client.patch("/api/v1/auth/me", json={"password": "NewSecure123!"}, headers=auth_headers)
+    # A password change now requires proof of the current one; see
+    # test_security_hardening.py for the rejection cases.
+    res = await client.patch(
+        "/api/v1/auth/me",
+        json={"password": "NewSecure123!", "current_password": "TestPass123!"},
+        headers=auth_headers,
+    )
     assert res.status_code == 200
 
     # Verify new password works

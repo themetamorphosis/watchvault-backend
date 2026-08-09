@@ -38,14 +38,24 @@ async def register_user(request: Request, user_in: user_schema.UserCreate, db: A
     return db_obj
 
 
+# A real bcrypt hash to compare against when the account doesn't exist. Without
+# it the miss path returns before hashing, and the response-time difference
+# tells an attacker which emails are registered.
+_DUMMY_PASSWORD_HASH = security.get_password_hash("not-a-real-password-placeholder")
+
+
 @router.post("/login", response_model=user_schema.Token)
 @limiter.limit("5/minute")
 async def login_access_token(request: Request, db: AsyncSession = Depends(dependencies.get_db), form_data: OAuth2PasswordRequestForm = Depends()):
     result = await db.execute(select(models.User).filter(models.User.email == form_data.username))
     user = result.scalars().first()
-    if not user or not user.password:
-        raise HTTPException(status_code=400, detail="Incorrect email or password")
-    if not security.verify_password(form_data.password, user.password):
+
+    # Always run one comparison, whether or not the account exists, so both
+    # paths cost the same.
+    stored_hash = user.password if user and user.password else _DUMMY_PASSWORD_HASH
+    password_ok = security.verify_password(form_data.password, stored_hash)
+
+    if not user or not user.password or not password_ok:
         raise HTTPException(status_code=400, detail="Incorrect email or password")
 
     # Issue new token family on login (invalidates any existing refresh tokens)
@@ -137,11 +147,32 @@ async def update_current_user(
     db: AsyncSession = Depends(dependencies.get_db)
 ):
     update_data = user_in.model_dump(exclude_unset=True)
+
+    # `current_password` is a credential, not a column — pull it out before the
+    # setattr loop so it can never be written to the model.
+    current_password = update_data.pop("current_password", None)
+
+    if "password" in update_data:
+        if not current_password:
+            raise HTTPException(
+                status_code=400,
+                detail="current_password is required to change your password",
+            )
+        if not current_user.password or not security.verify_password(
+            current_password, current_user.password
+        ):
+            raise HTTPException(status_code=400, detail="Current password is incorrect")
+
     for field, value in update_data.items():
         if field == "password":
             setattr(current_user, field, security.get_password_hash(value))
         else:
             setattr(current_user, field, value)
+
+    if "password" in update_data:
+        # Every refresh token issued before the change must die with it —
+        # otherwise changing a password after a compromise locks nobody out.
+        current_user.token_family = None
 
     db.add(current_user)
     await db.commit()

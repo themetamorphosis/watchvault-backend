@@ -7,8 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api import dependencies
 from app.db import models
 from app.utils.file_validator import (
+    extension_for_content,
     read_upload_capped,
-    sanitize_extension,
     validate_upload_file,
 )
 from app.utils.upload_paths import SNAPSHOTS_SUBDIR, public_url, upload_subdir
@@ -29,7 +29,8 @@ async def upload_snapshot(
     validate_upload_file(file, content, MAX_SIZE)
 
     upload_dir = upload_subdir(SNAPSHOTS_SUBDIR)
-    ext = sanitize_extension(file.filename, default="png")
+    # Derived from the validated bytes, never from the client's filename.
+    ext = extension_for_content(content, default="png")
     filename = f"dash-{current_user.id}-{int(time.time() * 1000)}.{ext}"
     filepath = os.path.join(upload_dir, filename)
 

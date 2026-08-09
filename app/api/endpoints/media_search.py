@@ -291,7 +291,12 @@ async def discover_media(
     genre: Optional[str] = Query(None),
     year: Optional[int] = Query(None),
     decade: Optional[int] = Query(None),
-    sort_by: str = Query("popularity.desc"),
+    # Allow-listed: this value is concatenated into the TMDB query string, so
+    # free text let a caller append arbitrary extra TMDB parameters.
+    sort_by: str = Query(
+        "popularity.desc",
+        pattern=r"^(popularity|vote_average|vote_count|revenue|primary_release_date|first_air_date|original_title|name)\.(asc|desc)$",
+    ),
     page: int = Query(1, ge=1, le=500),
 ):
     """Discover media with advanced filters."""

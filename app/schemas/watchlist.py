@@ -46,3 +46,34 @@ class WatchlistItem(WatchlistItemBase):
 
     class Config:
         from_attributes = True
+
+
+# The three shapes below were documented by hand in CLAUDE.md and returned as
+# bare dicts. Declaring them keeps the OpenAPI schema honest automatically.
+
+
+class WatchlistPage(BaseModel):
+    """`GET /watchlist` — a page of items plus its pagination envelope."""
+    items: List[WatchlistItem]
+    total: int
+    limit: int
+    offset: int
+    has_more: bool
+
+
+class BatchImportResult(BaseModel):
+    """`POST /watchlist/batch`."""
+    success: bool
+    imported: int
+    skipped: int
+
+
+class FavoriteToggleResult(BaseModel):
+    """`PATCH /watchlist/{id}/toggle-favorite`."""
+    id: str
+    favorite: bool
+
+
+class DeleteResult(BaseModel):
+    """`DELETE /watchlist/{id}`."""
+    ok: bool

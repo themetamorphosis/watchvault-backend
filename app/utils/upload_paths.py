@@ -41,3 +41,31 @@ def upload_subdir(name: str) -> str:
 def public_url(subdir: str, filename: str) -> str:
     """Public URL for a stored file, matching the StaticFiles mount in main.py."""
     return f"{URL_PREFIX}/{subdir}/{filename}"
+
+
+def local_path_for_url(url: str | None, subdir: str) -> str | None:
+    """Resolve a public upload URL back to a path inside `subdir`, or None.
+
+    Returns None for anything that isn't one of our own upload URLs — external
+    avatar URLs, empty values, and any path that escapes the subdirectory. The
+    containment check matters because this feeds a delete.
+    """
+    if not url:
+        return None
+
+    prefix = f"{URL_PREFIX}/{subdir}/"
+    if not url.startswith(prefix):
+        return None
+
+    filename = url[len(prefix):]
+    if not filename or "/" in filename or "\\" in filename:
+        return None
+
+    root = os.path.realpath(os.path.join(upload_root(), subdir))
+    candidate = os.path.realpath(os.path.join(root, filename))
+
+    # Defence in depth: refuse anything that resolves outside the subdirectory.
+    if os.path.commonpath([root, candidate]) != root:
+        return None
+
+    return candidate

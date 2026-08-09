@@ -9,6 +9,7 @@ import time as _time
 import uuid
 import urllib.parse
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
@@ -46,6 +47,19 @@ def get_shared_client() -> httpx.AsyncClient:
 _search_cache: dict[str, tuple[float, list]] = {}
 _CACHE_TTL = 300
 _CACHE_MAX = 128
+
+
+# ═══════════════════════════════════════════════════════════════
+#  DB CACHE EXPIRY (see schema.md — updatedAt is the TTL basis)
+# ═══════════════════════════════════════════════════════════════
+
+# A released film's metadata is effectively immutable; posters do get replaced
+# upstream, so this is long rather than infinite.
+CACHE_TTL_DAYS = 30
+
+# TV and anime: episode counts change while a series airs, and runtime is a
+# total, so these need re-checking far more often.
+RUNNING_SERIES_TTL_DAYS = 7
 
 
 def cache_get(key: str):
@@ -87,8 +101,14 @@ TMDB_TV_GENRES = {
 #  DB CACHE LAYER
 # ═══════════════════════════════════════════════════════════════
 
-async def get_cached(db: AsyncSession, title: str, media_type: str, year: Optional[int]) -> Optional[models.MediaCache]:
-    """Look up a cache entry by (title, mediaType, year)."""
+async def _get_cache_row(
+    db: AsyncSession, title: str, media_type: str, year: Optional[int]
+) -> Optional[models.MediaCache]:
+    """Raw lookup by (title, mediaType, year), ignoring freshness.
+
+    Used by upsert_cache, which must find an expired row to refresh it rather
+    than insert a duplicate and violate mediacache_title_type_year_key.
+    """
     q = select(models.MediaCache).filter(
         models.MediaCache.title == title,
         models.MediaCache.mediaType == media_type,
@@ -99,6 +119,76 @@ async def get_cached(db: AsyncSession, title: str, media_type: str, year: Option
         q = q.filter(models.MediaCache.year.is_(None))
     result = await db.execute(q)
     return result.scalars().first()
+
+
+def is_cache_entry_fresh(updated_at, media_type: str) -> bool:
+    """Whether a cache entry is still within its TTL.
+
+    TV and anime get the shorter window: a series that is still airing gains
+    episodes, and MediaCache.runtime stores a *total*, so it goes stale in a way
+    a released film's never does.
+    """
+    if updated_at is None:
+        return False
+
+    # Some drivers hand back naive datetimes; assume UTC rather than crash on
+    # a mixed-awareness subtraction.
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+
+    ttl_days = RUNNING_SERIES_TTL_DAYS if media_type in ("tv", "anime") else CACHE_TTL_DAYS
+    return datetime.now(timezone.utc) - updated_at < timedelta(days=ttl_days)
+
+
+async def get_cached(db: AsyncSession, title: str, media_type: str, year: Optional[int]) -> Optional[models.MediaCache]:
+    """Look up a *fresh* cache entry by (title, mediaType, year).
+
+    An expired entry reads as a miss so callers re-fetch, but the row is left in
+    place for upsert_cache to update.
+    """
+    entry = await _get_cache_row(db, title, media_type, year)
+    if entry is None:
+        return None
+    if not is_cache_entry_fresh(entry.updatedAt, media_type):
+        logger.info("CACHE EXPIRED: %s (%s)", title, media_type)
+        return None
+    return entry
+
+
+async def get_cached_bulk(
+    db: AsyncSession, keys: list[tuple[str, str, Optional[int]]]
+) -> dict[tuple[str, str, Optional[int]], models.MediaCache]:
+    """Fresh cache entries for many keys in one query.
+
+    The batch import previously called get_cached once per item — 100 round
+    trips for a full batch. Only fresh entries are returned, matching
+    get_cached's contract.
+    """
+    if not keys:
+        return {}
+
+    titles = {title for title, _, _ in keys}
+    media_types = {media_type for _, media_type, _ in keys}
+
+    # Over-selects slightly (the cross product of titles and types) and then
+    # filters exactly in Python. One query beats a tuple-IN that not every
+    # backend plans well.
+    rows = (
+        await db.execute(
+            select(models.MediaCache).filter(
+                models.MediaCache.title.in_(titles),
+                models.MediaCache.mediaType.in_(media_types),
+            )
+        )
+    ).scalars().all()
+
+    wanted = set(keys)
+    found: dict[tuple[str, str, Optional[int]], models.MediaCache] = {}
+    for row in rows:
+        key = (row.title, row.mediaType, row.year)
+        if key in wanted and is_cache_entry_fresh(row.updatedAt, row.mediaType):
+            found[key] = row
+    return found
 
 
 async def upsert_cache(
@@ -112,19 +202,34 @@ async def upsert_cache(
     runtime: Optional[int] = None,
     tmdb_id: Optional[int] = None,
 ) -> models.MediaCache:
-    """Insert or update a cache entry."""
-    existing = await get_cached(db, title, media_type, year)
+    """Insert or update a cache entry.
+
+    Looks up the raw row rather than a fresh one: an expired entry still occupies
+    the (title, mediaType, year) unique key, so inserting alongside it would
+    fail. Refreshing it in place is also what renews the TTL.
+    """
+    existing = await _get_cache_row(db, title, media_type, year)
     if existing:
-        if cover_url is not None and not existing.coverUrl:
+        expired = not is_cache_entry_fresh(existing.updatedAt, media_type)
+
+        # Fill blanks always; overwrite populated fields only once the entry has
+        # expired, which is the whole point of having a TTL.
+        if cover_url is not None and (not existing.coverUrl or expired):
             existing.coverUrl = cover_url
-        if genres and (not existing.genres or len(existing.genres) == 0):
+        if genres and (not existing.genres or len(existing.genres) == 0 or expired):
             existing.genres = genres
-        if description is not None and not existing.description:
+        if description is not None and (not existing.description or expired):
             existing.description = description
-        if runtime is not None and existing.runtime is None:
+        if runtime is not None and (existing.runtime is None or expired):
             existing.runtime = runtime
         if tmdb_id is not None and existing.tmdbId is None:
             existing.tmdbId = tmdb_id
+
+        # onupdate=func.now() only fires when a column actually changed. A
+        # re-fetch that confirms the cached values still needs to renew the TTL,
+        # or the entry re-expires immediately and refetches on every request.
+        existing.updatedAt = datetime.now(timezone.utc)
+
         await db.commit()
         await db.refresh(existing)
         return existing
