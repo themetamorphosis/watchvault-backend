@@ -152,7 +152,9 @@ async def upsert_cache(
 
 async def fetch_tvmaze_poster(title: str) -> dict:
     client = get_shared_client()
-    r = await client.get(f"https://api.tvmaze.com/search/shows?q={title}")
+    r = await client.get(
+        f"https://api.tvmaze.com/search/shows?q={urllib.parse.quote(title)}"
+    )
     if r.status_code == 429 or r.status_code >= 500:
         raise Exception(f"TVMaze API error {r.status_code}")
     if r.status_code != 200:
@@ -173,7 +175,9 @@ async def fetch_tvmaze_poster(title: str) -> dict:
 
 async def fetch_jikan_poster(title: str) -> dict:
     client = get_shared_client()
-    r = await client.get(f"https://api.jikan.moe/v4/anime?q={title}&limit=1")
+    r = await client.get(
+        f"https://api.jikan.moe/v4/anime?q={urllib.parse.quote(title)}&limit=1"
+    )
     if r.status_code == 429 or r.status_code >= 500:
         raise Exception(f"Jikan API error {r.status_code}")
     if r.status_code != 200:
@@ -194,7 +198,7 @@ async def fetch_jikan_poster(title: str) -> dict:
 async def fetch_tmdb_movie_poster(title: str, year: Optional[int]) -> dict:
     if not settings.TMDB_API_KEY:
         return {"coverUrl": None, "genres": [], "tmdbId": None}
-    url = f"https://api.themoviedb.org/3/search/movie?api_key={settings.TMDB_API_KEY}&query={title}&include_adult=false&page=1"
+    url = f"https://api.themoviedb.org/3/search/movie?api_key={settings.TMDB_API_KEY}&query={urllib.parse.quote(title)}&include_adult=false&page=1"
     if year:
         url += f"&year={year}"
     client = get_shared_client()
@@ -218,7 +222,7 @@ async def fetch_tmdb_movie_poster(title: str, year: Optional[int]) -> dict:
 async def fetch_movie_runtime(title: str, year: Optional[int]) -> Optional[int]:
     if not settings.TMDB_API_KEY:
         return None
-    url = f"https://api.themoviedb.org/3/search/movie?api_key={settings.TMDB_API_KEY}&query={title}&include_adult=false&page=1"
+    url = f"https://api.themoviedb.org/3/search/movie?api_key={settings.TMDB_API_KEY}&query={urllib.parse.quote(title)}&include_adult=false&page=1"
     if year:
         url += f"&year={year}"
     client = get_shared_client()
@@ -238,7 +242,7 @@ async def fetch_movie_runtime(title: str, year: Optional[int]) -> Optional[int]:
 async def fetch_tv_runtime(title: str, year: Optional[int]) -> Optional[int]:
     if not settings.TMDB_API_KEY:
         return None
-    url = f"https://api.themoviedb.org/3/search/tv?api_key={settings.TMDB_API_KEY}&query={title}&include_adult=false&page=1"
+    url = f"https://api.themoviedb.org/3/search/tv?api_key={settings.TMDB_API_KEY}&query={urllib.parse.quote(title)}&include_adult=false&page=1"
     if year:
         url += f"&first_air_date_year={year}"
     client = get_shared_client()
@@ -262,7 +266,9 @@ async def fetch_tv_runtime(title: str, year: Optional[int]) -> Optional[int]:
 
 async def fetch_anime_runtime(title: str) -> Optional[int]:
     client = get_shared_client()
-    r = await client.get(f"https://api.jikan.moe/v4/anime?q={title}&limit=1")
+    r = await client.get(
+        f"https://api.jikan.moe/v4/anime?q={urllib.parse.quote(title)}&limit=1"
+    )
     if r.status_code != 200:
         return None
     data = r.json().get("data", [])

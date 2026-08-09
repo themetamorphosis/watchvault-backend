@@ -4,17 +4,21 @@ import logging
 import sqlalchemy
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.api.api import api_router
+from app.api.dependencies import get_db
 from app.services.cleanup import run_cleanup
 from app.core.config import settings
 from app.db.database import engine, Base
 from app.middleware.rate_limit import limiter
+from app.utils import upload_paths
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -129,6 +133,15 @@ async def add_security_headers(request: Request, call_next):
     return response
 
 
+# --- Uploaded files ---
+# Without this mount the upload endpoints return URLs that 404: the bytes were
+# written to disk but nothing ever served them.
+app.mount(
+    upload_paths.URL_PREFIX,
+    StaticFiles(directory=upload_paths.get_or_create_root()),
+    name="uploads",
+)
+
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
 
@@ -137,32 +150,58 @@ def root():
     return {"message": "Welcome to Things Ive Watched API"}
 
 
-@app.get("/health")
-async def health():
-    checks = {}
-    ok = True
-
-    # Database
+async def _check_db(db: AsyncSession) -> bool:
+    """Readiness probe against the same session machinery the API uses."""
     try:
-        async with engine.connect() as conn:
-            await conn.execute(sqlalchemy.text("SELECT 1"))
-        checks["db"] = "ok"
+        await db.execute(sqlalchemy.text("SELECT 1"))
+        return True
     except Exception:
-        checks["db"] = "failed"
-        ok = False
         logger.error("Health check DB failed", exc_info=True)
+        return False
 
-    # TMDB API (non-blocking, degraded is acceptable)
-    try:
-        import httpx
-        async with httpx.AsyncClient(timeout=3) as client:
-            resp = await client.get(
-                f"https://api.themoviedb.org/3/movie/popular",
-                params={"api_key": settings.TMDB_API_KEY, "page": 1},
-            )
-            checks["tmdb"] = "ok" if resp.status_code == 200 else "degraded"
-    except Exception:
-        checks["tmdb"] = "degraded"
+
+@app.get("/health/live")
+async def health_live():
+    """Liveness: is the process up? Never touches the DB or any third party,
+    so a probe loop can run at any frequency."""
+    return {"status": "alive"}
+
+
+@app.get("/health/ready")
+async def health_ready(db: AsyncSession = Depends(get_db)):
+    """Readiness: can we serve traffic? Database only."""
+    db_ok = await _check_db(db)
+    return JSONResponse(
+        status_code=200 if db_ok else 503,
+        content={
+            "status": "ready" if db_ok else "not_ready",
+            "checks": {"db": "ok" if db_ok else "failed"},
+        },
+    )
+
+
+@app.get("/health")
+async def health(deep: bool = False, db: AsyncSession = Depends(get_db)):
+    """Aggregate health.
+
+    TMDB is only probed when `?deep=true`. It used to be checked on every call,
+    which turned a 10s liveness probe into ~8,600 third-party requests a day and
+    made the endpoint's latency depend on an external service.
+    """
+    checks = {"db": "ok" if await _check_db(db) else "failed"}
+    ok = checks["db"] == "ok"
+
+    if deep:
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=3) as client:
+                resp = await client.get(
+                    "https://api.themoviedb.org/3/movie/popular",
+                    params={"api_key": settings.TMDB_API_KEY, "page": 1},
+                )
+                checks["tmdb"] = "ok" if resp.status_code == 200 else "degraded"
+        except Exception:
+            checks["tmdb"] = "degraded"
 
     status_code = 200 if ok else 503
     return JSONResponse(

@@ -5,19 +5,18 @@ from fastapi import APIRouter, Depends, File, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import dependencies
-from app.core.config import settings
 from app.db import models
-from app.utils.file_validator import validate_upload_file, get_upload_dir, sanitize_extension
+from app.utils.file_validator import (
+    read_upload_capped,
+    sanitize_extension,
+    validate_upload_file,
+)
+from app.utils.upload_paths import SNAPSHOTS_SUBDIR, public_url, upload_subdir
 import aiofiles
 
 router = APIRouter()
 
 MAX_SIZE = 5 * 1024 * 1024  # 5MB
-
-
-def _get_snapshot_dir() -> str:
-    base = settings.UPLOAD_DIR or os.path.join(os.getcwd(), "uploads", "snapshots")
-    return get_upload_dir(base)
 
 
 @router.post("")
@@ -26,10 +25,10 @@ async def upload_snapshot(
     current_user: models.User = Depends(dependencies.get_current_user),
     db: AsyncSession = Depends(dependencies.get_db),
 ):
-    content = await file.read()
+    content = await read_upload_capped(file, MAX_SIZE)
     validate_upload_file(file, content, MAX_SIZE)
 
-    upload_dir = _get_snapshot_dir()
+    upload_dir = upload_subdir(SNAPSHOTS_SUBDIR)
     ext = sanitize_extension(file.filename, default="png")
     filename = f"dash-{current_user.id}-{int(time.time() * 1000)}.{ext}"
     filepath = os.path.join(upload_dir, filename)
@@ -37,6 +36,6 @@ async def upload_snapshot(
     async with aiofiles.open(filepath, "wb") as out_file:
         await out_file.write(content)
 
-    image_url = f"/uploads/snapshots/{filename}"
+    image_url = public_url(SNAPSHOTS_SUBDIR, filename)
 
     return {"success": True, "imageUrl": image_url}

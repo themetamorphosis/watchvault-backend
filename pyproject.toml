@@ -2,6 +2,16 @@
 asyncio_mode = "auto"
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/__init__.py", "*/__pycache__/*"]
+
+[tool.coverage.report]
+# Ratcheted to just under the current 89%. Raise it as coverage grows;
+# never lower it to make a red build go green.
+fail_under = 85
+show_missing = true
 env = [
     "SECRET_KEY=test-secret-key-for-testing-only-32chars!!",
     "DATABASE_URL=postgresql+asyncpg://lumiere:lumiere@localhost:5432/lumiere_db_test",

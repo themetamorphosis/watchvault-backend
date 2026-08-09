@@ -10,6 +10,8 @@ ALLOWED_MAGIC = {
     b"GIF89a": "image/gif",
 }
 
+_CHUNK_SIZE = 64 * 1024
+
 
 def validate_magic_bytes(content: bytes) -> bool:
     """Check that file content starts with a known image magic bytes signature."""
@@ -17,6 +19,32 @@ def validate_magic_bytes(content: bytes) -> bool:
         if content[:len(sig)] == sig:
             return True
     return False
+
+
+async def read_upload_capped(file: UploadFile, max_size: int) -> bytes:
+    """Read an upload in chunks, aborting as soon as it exceeds max_size.
+
+    Reading the whole body first and checking the length afterwards means a
+    client can force the server to buffer arbitrarily large payloads before
+    the limit is ever applied. This bails out after at most one chunk past
+    the limit.
+    """
+    chunks: list[bytes] = []
+    total = 0
+
+    while True:
+        chunk = await file.read(_CHUNK_SIZE)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_size:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large. Max {max_size // (1024 * 1024)}MB.",
+            )
+        chunks.append(chunk)
+
+    return b"".join(chunks)
 
 
 def validate_upload_file(file: UploadFile, content: bytes, max_size: int) -> None:
@@ -46,4 +74,4 @@ def sanitize_extension(filename: str, default: str = "jpg") -> str:
         ext = filename.split(".")[-1]
     else:
         ext = default
-    return "".join(c for c in ext if c.isalnum())[:10]
+    return "".join(c for c in ext if c.isalnum())[:10] or default

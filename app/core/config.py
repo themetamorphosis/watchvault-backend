@@ -1,5 +1,28 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
+
+
+MIN_SECRET_KEY_LENGTH = 32
+
+# Substrings that mark a key as a placeholder. Matched as substrings, not as an
+# exact-match set: the previous exact-match blocklist let near-misses straight
+# through — "change-me-in-production" (the docker-compose default) matched
+# neither "change-me" nor "your-super-secret-key-change-in-production".
+PLACEHOLDER_SECRET_MARKERS = (
+    "change",
+    "secret-key",
+    "example",
+    "placeholder",
+    "dummy",
+    "insecure",
+    "your-",
+)
+
+_GENERATE_HINT = (
+    'generate one with: python -c "import secrets; print(secrets.token_urlsafe(64))"'
+)
+
+HARDENED_ENVIRONMENTS = {"production", "staging"}
 
 
 class Settings(BaseSettings):
@@ -23,12 +46,18 @@ class Settings(BaseSettings):
     @field_validator("SECRET_KEY")
     @classmethod
     def secret_key_required(cls, v: str) -> str:
-        _blocked = {"your-super-secret-key-change-in-production", "", "change-me", "secret"}
-        if not v or v.lower().strip() in _blocked:
+        """Length and presence apply in every environment."""
+        candidate = (v or "").strip()
+
+        if not candidate:
+            raise ValueError(f"SECRET_KEY must be set — {_GENERATE_HINT}")
+
+        if len(candidate) < MIN_SECRET_KEY_LENGTH:
             raise ValueError(
-                "SECRET_KEY must be set to a real value — "
-                "generate one with: python -c \"import secrets; print(secrets.token_urlsafe(64))\""
+                f"SECRET_KEY must be at least {MIN_SECRET_KEY_LENGTH} characters "
+                f"(got {len(candidate)}) — {_GENERATE_HINT}"
             )
+
         return v
 
     @field_validator("DATABASE_URL")
@@ -44,6 +73,26 @@ class Settings(BaseSettings):
         if not v:
             raise ValueError("TMDB_API_KEY must be set in environment or .env file")
         return v
+
+    @model_validator(mode="after")
+    def reject_placeholder_secret_outside_dev(self) -> "Settings":
+        """Refuse to boot production/staging with a recognisable placeholder key.
+
+        Scoped to deployed environments so that development and CI can keep using
+        readable keys (which necessarily contain words like "test").
+        """
+        if self.ENVIRONMENT.lower() not in HARDENED_ENVIRONMENTS:
+            return self
+
+        lowered = self.SECRET_KEY.strip().lower()
+        for marker in PLACEHOLDER_SECRET_MARKERS:
+            if marker in lowered:
+                raise ValueError(
+                    f"SECRET_KEY looks like a placeholder (contains {marker!r}) and "
+                    f"ENVIRONMENT is {self.ENVIRONMENT!r} — {_GENERATE_HINT}"
+                )
+
+        return self
 
 
 settings = Settings()

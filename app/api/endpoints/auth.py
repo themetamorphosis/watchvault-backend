@@ -1,6 +1,7 @@
 from datetime import timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
+from jose import JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.api import dependencies
@@ -74,7 +75,7 @@ async def refresh_access_token(request: Request, db: AsyncSession = Depends(depe
 
     try:
         payload = security.decode_token(refresh_token)
-    except Exception:
+    except JWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
     if not security.verify_token_type(payload, "refresh"):

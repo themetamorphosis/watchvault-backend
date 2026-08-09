@@ -2,12 +2,13 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from app.api import dependencies
 from app.db import models
 from app.schemas import watchlist as watchlist_schema
 from app.api.endpoints.media import get_cached, enrich_media_cache
 from app.db.database import AsyncSessionLocal
-from fastapi.responses import JSONResponse
 import uuid
 import logging
 
@@ -82,7 +83,8 @@ async def get_watchlist(
         "total": total,
         "limit": limit,
         "offset": offset,
-        "has_more": offset + (limit or total) < total,
+        # limit=0 means "return everything", so nothing can remain after it.
+        "has_more": (offset + limit) < total if limit > 0 else False,
     }
 
 @router.post("", response_model=watchlist_schema.WatchlistItem)
@@ -123,7 +125,14 @@ async def create_watchlist_item(
         **item_data
     )
     db.add(db_item)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Two concurrent requests can both pass the SELECT above and race to
+        # INSERT. The unique constraint is the real arbiter; surface it as the
+        # documented 400 rather than letting it bubble up as a 500.
+        await db.rollback()
+        raise HTTPException(status_code=400, detail="Item already exists in your watchlist")
     await db.refresh(db_item)
 
     # Trigger background enrichment (fetches missing poster/runtime from external APIs)
@@ -151,9 +160,8 @@ async def batch_import_items(
             status_code=413,
             detail=f"Batch size {len(items)} exceeds maximum of {MAX_BATCH_SIZE}"
         )
-    imported = 0
     skipped = 0
-    
+
     # Get existing items for this user to check duplicates
     result = await db.execute(
         select(models.WatchlistItem).filter(
@@ -162,18 +170,23 @@ async def batch_import_items(
     )
     existing_items = result.scalars().all()
     existing_set = {(item.title.lower(), item.mediaType) for item in existing_items}
-    
+
+    rows: list[dict] = []
+    pending: dict[str, tuple[str, str, int | None]] = {}
+
     for item_in in items:
-        # Check for duplicates
+        # Case-insensitive pre-filter for a friendlier `skipped` count. The
+        # database constraint is case-sensitive, so ON CONFLICT below remains
+        # the actual arbiter.
         key = (item_in.title.lower(), item_in.mediaType)
         if key in existing_set:
             skipped += 1
             continue
-        
+
         # Check the global cache for pre-existing metadata
         cached = await get_cached(db, item_in.title, item_in.mediaType, item_in.year)
         item_data = item_in.model_dump()
-        
+
         # Auto-populate from cache if available
         if cached:
             if not item_data.get("coverUrl") and cached.coverUrl:
@@ -184,25 +197,39 @@ async def batch_import_items(
                 item_data["runtime"] = cached.runtime
             if not item_data.get("description") and cached.description:
                 item_data["description"] = cached.description
-        
-        db_item = models.WatchlistItem(
-            id=str(uuid.uuid4()),
-            userId=current_user.id,
-            **item_data
+
+        item_id = str(uuid.uuid4())
+        rows.append({"id": item_id, "userId": current_user.id, **item_data})
+        pending[item_id] = (item_in.title, item_in.mediaType, item_in.year)
+        existing_set.add(key)  # Prevent duplicates within the batch
+
+    imported = 0
+    inserted_ids: list[str] = []
+
+    if rows:
+        # ON CONFLICT DO NOTHING: a title that collides with an existing row
+        # (including one differing only by case) is skipped instead of aborting
+        # the whole batch with an IntegrityError.
+        stmt = (
+            pg_insert(models.WatchlistItem)
+            .values(rows)
+            .on_conflict_do_nothing(
+                constraint="watchlistitem_userid_title_mediatype_key"
+            )
+            .returning(models.WatchlistItem.id)
         )
-        db.add(db_item)
-        existing_set.add(key)  # Add to set to prevent duplicates within the batch
-        imported += 1
-        
-        # Trigger background enrichment
-        background_tasks.add_task(
-            _background_enrich, item_in.title, item_in.mediaType, item_in.year, db_item.id
-        )
-    
-    # Commit all items at once
-    if imported > 0:
+        inserted_ids = list((await db.execute(stmt)).scalars().all())
         await db.commit()
-    
+        imported = len(inserted_ids)
+        skipped += len(rows) - imported
+
+    # Queue enrichment only after the commit succeeds, and only for rows that
+    # actually landed — previously tasks were queued for rows that a failed
+    # commit never created.
+    for item_id in inserted_ids:
+        title, media_type, year = pending[item_id]
+        background_tasks.add_task(_background_enrich, title, media_type, year, item_id)
+
     return {"success": True, "imported": imported, "skipped": skipped}
 
 
@@ -228,13 +255,12 @@ async def toggle_favorite(
     return {"id": db_item.id, "favorite": db_item.favorite}
 
 
+# Mirrors WatchlistItemUpdate. Previously listed 12 fields that don't exist on
+# the model at all (poster_path, rating, tags, priority, watched_at, …), which
+# implied a schema that was never real.
 ALLOWED_UPDATE_FIELDS = {
-    "title", "overview", "poster_path", "backdrop_path",
-    "release_date", "rating", "media_type", "status",
-    "genres", "runtime", "number_of_seasons",
-    "next_episode_to_air", "notes", "tags",
-    "favorite", "priority", "watched_at",
-    "coverUrl", "description", "year", "endYear", "running",
+    "status", "favorite", "genres", "notes", "description",
+    "year", "endYear", "running", "coverUrl", "runtime",
 }
 
 @router.patch("/{item_id}", response_model=watchlist_schema.WatchlistItem)

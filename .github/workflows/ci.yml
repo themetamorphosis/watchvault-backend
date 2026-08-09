@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Pytest
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: lumiere
+          POSTGRES_PASSWORD: lumiere
+          POSTGRES_DB: lumiere_db_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lumiere"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      SECRET_KEY: ci-secret-key-not-for-production-min-32-chars-long
+      DATABASE_URL: postgresql+asyncpg://lumiere:lumiere@localhost:5432/lumiere_db_test
+      TEST_DATABASE_URL: postgresql+asyncpg://lumiere:lumiere@localhost:5432/lumiere_db_test
+      TMDB_API_KEY: test_tmdb_key
+      FRONTEND_URL: http://localhost:3000
+      ENVIRONMENT: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Test
+        run: pytest tests/ -q --cov=app --cov-report=term
+
+  migrations:
+    name: Alembic bootstraps an empty database
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: lumiere
+          POSTGRES_PASSWORD: lumiere
+          POSTGRES_DB: lumiere_migrate_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lumiere"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      SECRET_KEY: ci-secret-key-not-for-production-min-32-chars-long
+      DATABASE_URL: postgresql+asyncpg://lumiere:lumiere@localhost:5432/lumiere_migrate_test
+      TMDB_API_KEY: test_tmdb_key
+      FRONTEND_URL: http://localhost:3000
+      ENVIRONMENT: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      # Guards the failure mode where the only migration assumed tables
+      # that no migration ever created.
+      - name: Upgrade from empty
+        run: alembic upgrade head
+
+      - name: Downgrade back to base
+        run: alembic downgrade base

@@ -1,4 +1,7 @@
+import atexit
 import os
+import shutil
+import tempfile
 import uuid
 import asyncio
 from typing import AsyncGenerator
@@ -19,6 +22,12 @@ os.environ["DATABASE_URL"] = os.environ.get(
 os.environ["TMDB_API_KEY"] = "test_tmdb_key"
 os.environ["FRONTEND_URL"] = "http://localhost:3000"
 os.environ["ENVIRONMENT"] = "test"
+
+# Uploads must go somewhere disposable, and it has to be set before app.main is
+# imported: the StaticFiles mount resolves its directory at import time.
+_UPLOAD_TMPDIR = tempfile.mkdtemp(prefix="lumiere-test-uploads-")
+os.environ["UPLOAD_DIR"] = _UPLOAD_TMPDIR
+atexit.register(lambda: shutil.rmtree(_UPLOAD_TMPDIR, ignore_errors=True))
 
 from app.db.database import Base  # noqa: E402
 from app.core import security  # noqa: E402
