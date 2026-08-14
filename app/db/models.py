@@ -20,6 +20,7 @@ class User(Base):
     updatedAt = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
 
     watchlist_items = relationship("WatchlistItem", back_populates="user", cascade="all, delete-orphan")
+    share_links = relationship("ShareLink", back_populates="user", cascade="all, delete-orphan")
 
 class WatchlistItem(Base):
     __tablename__ = "WatchlistItem"
@@ -57,6 +58,37 @@ class WatchlistItem(Base):
         # sorts the user's whole library.
         Index('ix_watchlistitem_userid_updatedat', 'userId', updatedAt.desc()),
     )
+
+
+class ShareLink(Base):
+    """A public, read-only view of one user's watchlist.
+
+    The slug is chosen by the user and is therefore guessable — anyone who
+    tries a plausible handle can find the link. Deleting the row is the
+    revocation mechanism; there is no disabled state.
+
+    `statuses` and `mediaTypes` are filters, and an empty array means "no
+    filter" rather than "nothing". Storing an explicit empty list keeps the
+    NULL-vs-empty ambiguity out of the query in share.py.
+    """
+    __tablename__ = "ShareLink"
+
+    id = Column(String, primary_key=True, index=True)  # UUID4 string
+    userId = Column(String, ForeignKey("User.id", ondelete="CASCADE"), index=True, nullable=False)
+
+    # Stored lowercased so uniqueness is effectively case-insensitive; the
+    # lookup in the public endpoint lowercases too.
+    slug = Column(String, unique=True, index=True, nullable=False)
+    label = Column(String, nullable=True)
+
+    statuses = Column(ARRAY(String), default=list)    # subset of watched/pending/wishlist
+    mediaTypes = Column(ARRAY(String), default=list)  # subset of movie/tv/anime
+    favoritesOnly = Column(Boolean, default=False)
+
+    user = relationship("User", back_populates="share_links")
+
+    createdAt = Column(DateTime(timezone=True), server_default=func.now())
+    updatedAt = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
 
 
 class MediaCache(Base):
