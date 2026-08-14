@@ -4,6 +4,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from jose import JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from app.api import dependencies
 from app.core import security, config
 from app.db import models
@@ -175,6 +176,12 @@ async def update_current_user(
         current_user.token_family = None
 
     db.add(current_user)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # `handle` is globally unique. Two people can claim the same one at the
+        # same moment, so the index is the arbiter rather than a pre-check.
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="That handle is already taken")
     await db.refresh(current_user)
     return current_user

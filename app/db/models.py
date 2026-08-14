@@ -11,6 +11,10 @@ class User(Base):
     id = Column(String, primary_key=True, index=True) # Assuming CUID string
     name = Column(String, nullable=True)
     email = Column(String, unique=True, index=True, nullable=False)
+    # Public identity for the social section. Nullable because every account
+    # created before handles existed has none until it claims one, and because
+    # a user who never opens /social never needs one.
+    handle = Column(String, unique=True, index=True, nullable=True)
     emailVerified = Column(DateTime(timezone=True), nullable=True)
     image = Column(String, nullable=True)
     password = Column(String, nullable=True) # hashed via bcryptjs
@@ -57,6 +61,76 @@ class WatchlistItem(Base):
         # newest-first. Without it that sort is unindexed and every page load
         # sorts the user's whole library.
         Index('ix_watchlistitem_userid_updatedat', 'userId', updatedAt.desc()),
+    )
+
+
+class Friendship(Base):
+    """A friend relationship in one of two states.
+
+    One row per pair, always — the requester and addressee keep their original
+    roles after acceptance rather than the row being duplicated. Callers must
+    therefore check both directions; `friendship_between` in
+    `app/services/social_service.py` is the only place that should build that
+    predicate.
+
+    Rejecting, cancelling, and unfriending all delete the row. There is no
+    `rejected` state to distinguish "declined you" from "hasn't seen it", which
+    keeps that information from leaking back to the requester.
+    """
+    __tablename__ = "Friendship"
+
+    id = Column(String, primary_key=True, index=True)
+    requesterId = Column(String, ForeignKey("User.id", ondelete="CASCADE"), index=True, nullable=False)
+    addresseeId = Column(String, ForeignKey("User.id", ondelete="CASCADE"), index=True, nullable=False)
+    status = Column(String, nullable=False)  # "pending" | "accepted"
+
+    createdAt = Column(DateTime(timezone=True), server_default=func.now())
+    updatedAt = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint('requesterId', 'addresseeId', name='friendship_requester_addressee_key'),
+        # Supports "everyone who has a relationship with me", which runs on
+        # every load of /social in both directions.
+        Index('ix_friendship_addressee_status', 'addresseeId', 'status'),
+        Index('ix_friendship_requester_status', 'requesterId', 'status'),
+    )
+
+
+class Message(Base):
+    """A direct message between two users.
+
+    The attached title is **snapshotted**, not a foreign key to WatchlistItem.
+    A recommendation has to survive the sender editing or deleting their own
+    copy of the item — otherwise "you should watch this" becomes a blank card
+    weeks later, and a delete would rewrite history in someone else's inbox.
+    """
+    __tablename__ = "Message"
+
+    id = Column(String, primary_key=True, index=True)
+    senderId = Column(String, ForeignKey("User.id", ondelete="CASCADE"), index=True, nullable=False)
+    recipientId = Column(String, ForeignKey("User.id", ondelete="CASCADE"), index=True, nullable=False)
+
+    body = Column(String, nullable=True)  # max 2000, enforced by Pydantic
+
+    # Attached title. All four are set together or all NULL; `itemTitle` is the
+    # field that decides whether an attachment is present.
+    itemTitle = Column(String, nullable=True)
+    itemMediaType = Column(String, nullable=True)  # "movie" | "tv" | "anime"
+    itemYear = Column(Integer, nullable=True)
+    itemCoverUrl = Column(String, nullable=True)
+
+    readAt = Column(DateTime(timezone=True), nullable=True)
+
+    createdAt = Column(DateTime(timezone=True), server_default=func.now())
+    updatedAt = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
+
+    __table_args__ = (
+        # A conversation is read in both directions, so both orderings are
+        # indexed: the polling loop runs this query every couple of seconds.
+        Index('ix_message_sender_recipient_created', 'senderId', 'recipientId', 'createdAt'),
+        Index('ix_message_recipient_sender_created', 'recipientId', 'senderId', 'createdAt'),
+        # Unread badge: my inbox, unread only.
+        Index('ix_message_recipient_readat', 'recipientId', 'readAt'),
     )
 
 

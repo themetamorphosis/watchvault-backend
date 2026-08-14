@@ -1,8 +1,10 @@
 from fastapi import APIRouter
 from app.api.endpoints import (
     auth,
+    friends,
     media_search,
     media_details,
+    messages,
     public,
     share,
     upload,
@@ -18,6 +20,8 @@ api_router.include_router(upload.router, prefix="/upload", tags=["upload"])
 api_router.include_router(watchlist.router, prefix="/watchlist", tags=["watchlist"])
 api_router.include_router(snapshots.router, prefix="/snapshots", tags=["snapshots"])
 api_router.include_router(share.router, prefix="/share", tags=["share"])
+api_router.include_router(friends.router, prefix="/friends", tags=["friends"])
+api_router.include_router(messages.router, prefix="/messages", tags=["messages"])
 # Unauthenticated. Kept under its own prefix so no future route lands next to
 # an authenticated one by accident.
 api_router.include_router(public.router, prefix="/public", tags=["public"])
